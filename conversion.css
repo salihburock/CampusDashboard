@@ -1,0 +1,177 @@
+/* Conversion page — builds on style.css variables */
+
+.conv-main { gap: 1.25rem; }
+
+/* ── Conversion card ───────────────────────────────────────── */
+.conv-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.conv-card h2 {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+/* ── Drop zone ─────────────────────────────────────────────── */
+.drop-zone {
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 2.5rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: .65rem;
+  cursor: pointer;
+  transition: border-color .2s, background .2s;
+  text-align: center;
+}
+
+.drop-zone.drag-over {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.drop-icon { font-size: 2.5rem; line-height: 1; }
+
+.drop-text {
+  font-size: .9rem;
+  color: var(--muted);
+}
+
+.drop-link {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.file-name {
+  font-size: .85rem;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--accent-dim);
+  padding: .3rem .7rem;
+  border-radius: 6px;
+}
+
+/* ── Format selector ───────────────────────────────────────── */
+.format-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.format-label {
+  font-size: .875rem;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.format-btns {
+  display: flex;
+  gap: .5rem;
+  flex-wrap: wrap;
+}
+
+.format-btn {
+  background: var(--tag-bg);
+  color: var(--text);
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  padding: .45rem 1rem;
+  font-size: .875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+.format-btn:hover    { border-color: var(--accent); }
+.format-btn.selected { border-color: var(--accent); background: var(--accent-dim); color: var(--accent); }
+
+/* ── Convert button ────────────────────────────────────────── */
+.conv-btn {
+  align-self: flex-start;
+  font-size: .9rem;
+  padding: .55rem 1.4rem;
+}
+
+/* ── Progress ──────────────────────────────────────────────── */
+.progress-row {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  font-size: .875rem;
+  color: var(--muted);
+}
+
+.spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Unsupported message ───────────────────────────────────── */
+.unsupported-msg {
+  font-size: .875rem;
+  color: var(--danger);
+  padding: .5rem 0;
+}
+
+/* ── Formats reference grid ────────────────────────────────── */
+.formats-grid {
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+}
+
+.fmt-row {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  font-size: .85rem;
+  padding: .3rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.fmt-row:last-child { border-bottom: none; }
+
+.fmt-src { font-weight: 600; min-width: 80px; }
+.fmt-arrow { color: var(--muted); }
+.fmt-targets { display: flex; gap: .35rem; flex-wrap: wrap; }
+
+/* ── Toast ─────────────────────────────────────────────────── */
+.toast {
+  position: fixed;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  padding: .65rem 1.1rem;
+  border-radius: 8px;
+  font-size: .875rem;
+  font-weight: 500;
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity .2s, transform .2s;
+  pointer-events: none;
+  z-index: 500;
+}
+.toast.show    { opacity: 1; transform: translateY(0); }
+.toast.success { background: var(--ok);     color: #fff; }
+.toast.error   { background: var(--danger); color: #fff; }
+
+/* ── Mobile ────────────────────────────────────────────────── */
+@media (max-width: 600px) {
+  .format-row { flex-direction: column; align-items: flex-start; }
+  .drop-zone  { padding: 1.75rem 1rem; }
+}

@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Edit Dashboard</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="admin.css" />
+</head>
+<body>
+
+  <header class="site-header">
+    <div class="header-left">
+      <h1>Edit Dashboard</h1>
+    </div>
+    <div class="header-right">
+      <button id="save-btn" class="btn-primary" onclick="saveData()">Save</button>
+      <a href="/" class="icon-btn" title="Back to dashboard">← Dashboard</a>
+      <button id="theme-toggle" class="icon-btn" title="Toggle dark mode">☾</button>
+    </div>
+  </header>
+
+  <main class="container admin-main">
+
+    <!-- Dashboard Title -->
+    <div class="admin-card">
+      <label class="field-label" for="dashboard-title">Dashboard Title</label>
+      <input id="dashboard-title" type="text" class="field-input"
+             placeholder="e.g. My Dashboard"
+             oninput="state.title = this.value">
+    </div>
+
+    <!-- Sections -->
+    <div class="admin-card">
+      <div class="admin-card-header">
+        <h2>Sections</h2>
+      </div>
+      <div id="sections-container"></div>
+      <button onclick="addSection()" class="btn-secondary">+ Add Section</button>
+    </div>
+
+    <!-- PDF / Document Library -->
+    <div class="admin-card">
+      <h2>Document Library</h2>
+      <p style="font-size:.8rem;color:var(--muted);margin:.25rem 0 .75rem">
+        Drag &amp; drop files anywhere on this page to upload and name them.
+      </p>
+      <div id="pdf-list"></div>
+    </div>
+
+  </main>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="admin.js"></script>
+  <script src="upload-overlay.js"></script>
+</body>
+</html>

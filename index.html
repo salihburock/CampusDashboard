@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashboard</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <header class="site-header">
+    <div class="header-left">
+      <h1 id="site-title">Dashboard</h1>
+    </div>
+    <div class="header-right">
+      <div id="clock" class="clock"></div>
+      <button id="theme-toggle" class="icon-btn" title="Toggle dark mode">☾</button>
+      <a href="/edit" class="icon-btn" title="Edit dashboard">✎</a>
+    </div>
+  </header>
+
+  <main id="app" class="container"></main>
+
+  <!-- PDF Modal -->
+  <div id="pdf-modal" class="modal" aria-modal="true" role="dialog">
+    <div class="modal-backdrop"></div>
+    <div class="modal-window">
+      <div class="modal-header">
+        <span id="pdf-title" class="modal-title"></span>
+        <div style="display:flex;align-items:center;gap:.4rem;flex-shrink:0">
+          <a id="pdf-external" href="#" target="_blank" rel="noopener"
+             class="icon-btn" title="Open in new tab" style="text-decoration:none">↗</a>
+          <button id="pdf-close" class="icon-btn" title="Close (Esc)">✕</button>
+        </div>
+      </div>
+      <iframe id="pdf-frame" class="pdf-frame" src="" title="PDF Viewer"></iframe>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+  <script src="upload-overlay.js"></script>
+
+</body>
+</html>

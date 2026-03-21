@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Edit — Dashboard</title>
+  <link rel="stylesheet" href="style.css" />
+  <style>
+    /* ── Editor header ─────────────────────────────────────── */
+    .editor-topbar {
+      position: sticky; top: 0; z-index: 100;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: .75rem 1.5rem; gap: 1rem;
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      box-shadow: var(--shadow);
+    }
+    .editor-topbar h1 { font-size: 1.1rem; font-weight: 700; }
+    .topbar-actions { display: flex; align-items: center; gap: .5rem; }
+    .back-link { font-size: .85rem; color: var(--muted); text-decoration: none; }
+    .back-link:hover { color: var(--text); }
+
+    .save-btn {
+      background: var(--accent); color: #fff; border: none;
+      border-radius: 6px; padding: .4rem .95rem;
+      font-size: .85rem; font-weight: 600; cursor: pointer;
+      transition: filter .15s;
+    }
+    .save-btn:hover:not(:disabled) { filter: brightness(1.12); }
+    .save-btn:disabled { opacity: .55; cursor: not-allowed; }
+
+    /* ── Form primitives ───────────────────────────────────── */
+    .field-row { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: .6rem; }
+
+    .field {
+      display: flex; flex-direction: column; gap: .2rem;
+      font-size: .7rem; font-weight: 700; color: var(--muted);
+      text-transform: uppercase; letter-spacing: .04em;
+    }
+    .field input, .field textarea {
+      font-family: var(--font); font-size: .83rem;
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text);
+      padding: .35rem .6rem; outline: none;
+      transition: border-color .15s;
+    }
+    .field input:focus, .field textarea:focus { border-color: var(--accent); }
+    .field textarea { resize: vertical; }
+
+    .w-xs  { width: 72px; }
+    .w-sm  { width: 110px; }
+    .w-md  { width: 170px; }
+    .w-lg  { width: 230px; }
+    .w-xl  { width: 320px; }
+    .w-full{ width: 100%; }
+
+    /* ── Course card in editor ─────────────────────────────── */
+    .ecourse {
+      border: 1px solid var(--border); border-radius: 8px;
+      margin-bottom: .75rem; overflow: hidden; background: var(--surface);
+    }
+    .ecourse-hdr {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: .7rem 1rem; cursor: pointer; user-select: none; gap: .5rem;
+    }
+    .ecourse-hdr:hover { background: var(--bg); }
+    .ecourse-hdr-title { display: flex; align-items: center; gap: .45rem; font-size: .9rem; font-weight: 600; }
+    .ecourse.collapsed .ecourse-body { display: none; }
+    .ecourse-body { border-top: 1px solid var(--border); padding: .9rem 1rem; }
+
+    /* ── Sub-section (homework / exams / slides / resources) ─ */
+    .esub { border-top: 1px solid var(--border); padding-top: .65rem; margin-top: .7rem; }
+    .esub-hdr {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: .4rem;
+    }
+    .esub-label {
+      font-size: .7rem; font-weight: 700; color: var(--muted);
+      text-transform: uppercase; letter-spacing: .05em;
+    }
+
+    /* Sub-item rows */
+    .erow {
+      display: flex; flex-wrap: wrap; align-items: flex-start;
+      gap: .4rem; padding: .4rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .erow:last-of-type { border-bottom: none; }
+    .erow-inputs { display: flex; flex-wrap: wrap; gap: .4rem; flex: 1; }
+
+    /* Simple section items */
+    .eitem {
+      display: flex; flex-wrap: wrap; align-items: flex-start;
+      gap: .4rem; padding: .45rem 0; border-bottom: 1px solid var(--border);
+    }
+    .eitem:last-of-type { border-bottom: none; }
+    .eitem-inputs { display: flex; flex-wrap: wrap; gap: .4rem; flex: 1; }
+
+    /* ── Buttons ───────────────────────────────────────────── */
+    .rm-btn {
+      background: none; border: 1px solid var(--border); border-radius: 5px;
+      color: var(--muted); cursor: pointer; font-size: .78rem;
+      padding: .25rem .4rem; flex-shrink: 0; align-self: flex-start;
+      margin-top: 1.3rem;
+    }
+    .rm-btn:hover { border-color: var(--danger); color: var(--danger); }
+
+    .add-btn {
+      width: 100%; background: none; border: 1px dashed var(--border);
+      border-radius: 6px; color: var(--accent); cursor: pointer;
+      font-size: .78rem; font-weight: 600; padding: .3rem .65rem;
+      margin-top: .35rem; transition: background .15s, border-color .15s;
+    }
+    .add-btn:hover { background: var(--accent-dim); border-color: var(--accent); }
+
+    .add-course-btn {
+      width: 100%; border: 2px dashed var(--border); border-radius: 8px;
+      background: none; color: var(--muted); cursor: pointer;
+      font-size: .85rem; font-weight: 600; padding: .7rem;
+      transition: background .15s, color .15s;
+    }
+    .add-course-btn:hover { background: var(--bg); color: var(--text); }
+
+    /* ── Toast ─────────────────────────────────────────────── */
+    .toast {
+      position: fixed; bottom: 1.5rem; right: 1.5rem;
+      background: #1a1d27; color: #fff;
+      border-radius: 8px; padding: .55rem 1rem;
+      font-size: .85rem; font-weight: 600;
+      box-shadow: 0 4px 16px rgba(0,0,0,.25);
+      opacity: 0; transform: translateY(6px);
+      transition: opacity .2s, transform .2s;
+      pointer-events: none; z-index: 999;
+    }
+    .toast.show { opacity: 1; transform: none; }
+
+    @media (max-width: 600px) {
+      .editor-topbar { padding: .65rem 1rem; }
+      .w-lg, .w-xl { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+
+  <header class="editor-topbar">
+    <a href="/" class="back-link">← Dashboard</a>
+    <h1>Edit</h1>
+    <div class="topbar-actions">
+      <button id="theme-toggle" class="icon-btn" title="Toggle theme">☾</button>
+      <button id="save-btn" class="save-btn">💾 Save</button>
+    </div>
+  </header>
+
+  <main id="editor" class="container"></main>
+  <div id="toast" class="toast"></div>
+
+  <script>
+  // ── State ─────────────────────────────────────────────────────
+  let state = null;
+
+  // ── DOM helpers ───────────────────────────────────────────────
+  function el(tag, cls) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    return e;
+  }
+
+  function inp(type, value, onChange, placeholder, extraCls) {
+    const i = document.createElement('input');
+    i.type = type || 'text';
+    i.value = value ?? '';
+    if (placeholder) i.placeholder = placeholder;
+    if (extraCls) i.className = extraCls;
+    i.addEventListener('input', () => onChange(i.value));
+    return i;
+  }
+
+  function txa(value, onChange, placeholder, rows, extraCls) {
+    const t = document.createElement('textarea');
+    t.value = value ?? '';
+    if (placeholder) t.placeholder = placeholder;
+    t.rows = rows || 2;
+    if (extraCls) t.className = extraCls;
+    t.addEventListener('input', () => onChange(t.value));
+    return t;
+  }
+
+  function field(labelText, inputEl) {
+    const lbl = el('div', 'field');
+    const span = document.createElement('span');
+    span.textContent = labelText;
+    lbl.appendChild(span);
+    lbl.appendChild(inputEl);
+    return lbl;
+  }
+
+  function mkBtn(text, cls, onClick) {
+    const b = el('button', cls);
+    b.textContent = text;
+    b.addEventListener('click', e => { e.stopPropagation(); onClick(); });
+    return b;
+  }
+
+  // ── Sub-item list (reusable) ──────────────────────────────────
+  // rowFn(container, item) — fills container with inputs for one item
+  // defItem — default object for new items
+  function subList(container, arr, rowFn, defItem) {
+    container.innerHTML = '';
+    arr.forEach((item, i) => {
+      const row = el('div', 'erow');
+      const inputs = el('div', 'erow-inputs');
+      rowFn(inputs, item);
+      row.appendChild(inputs);
+      row.appendChild(mkBtn('✕', 'rm-btn', () => {
+        arr.splice(i, 1);
+        subList(container, arr, rowFn, defItem);
+      }));
+      container.appendChild(row);
+    });
+    container.appendChild(mkBtn('+ Add', 'add-btn', () => {
+      arr.push(JSON.parse(JSON.stringify(defItem)));
+      subList(container, arr, rowFn, defItem);
+    }));
+  }
+
+  function mkSubSection(title, arr, rowFn, defItem) {
+    const wrap = el('div', 'esub');
+    const hdr = el('div', 'esub-hdr');
+    hdr.appendChild(el('span', 'esub-label')).textContent = title;
+    wrap.appendChild(hdr);
+    const list = el('div');
+    subList(list, arr, rowFn, defItem);
+    wrap.appendChild(list);
+    return wrap;
+  }
+
+  // ── Course sub-item row definitions ──────────────────────────
+
+  function homeworkRow(c, hw) {
+    c.appendChild(field('Title',      inp('text', hw.title,    v => hw.title    = v, 'Assignment title', 'w-lg')));
+    c.appendChild(field('Deadline',   inp('date', hw.deadline, v => hw.deadline = v)));
+    c.appendChild(field('Notes',      inp('text', hw.notes,    v => hw.notes    = v, 'Optional notes', 'w-md')));
+    c.appendChild(field('File (PDF)', inp('text', hw.file,     v => hw.file     = v, 'docs/file.pdf', 'w-md')));
+  }
+
+  function examRow(c, ex) {
+    c.appendChild(field('Type',        inp('text', ex.type,       v => ex.type       = v, 'e.g. Midterm', 'w-sm')));
+    c.appendChild(field('Date',        inp('date', ex.date,       v => ex.date       = v)));
+    c.appendChild(field('Room',        inp('text', ex.room,       v => ex.room       = v, 'Room', 'w-sm')));
+    c.appendChild(field('Notes',       inp('text', ex.notes,      v => ex.notes      = v, 'Optional', 'w-md')));
+    c.appendChild(field('Sample PDF',  inp('text', ex.sampleFile, v => ex.sampleFile = v, 'docs/sample.pdf', 'w-md')));
+  }
+
+  function slideRow(c, sl) {
+    c.appendChild(field('Title',      inp('text', sl.title, v => sl.title = v, 'Lecture title', 'w-lg')));
+    c.appendChild(field('Date',       inp('date', sl.date,  v => sl.date  = v)));
+    c.appendChild(field('File (PDF)', inp('text', sl.file,  v => sl.file  = v, 'docs/slides.pdf', 'w-md')));
+    c.appendChild(field('Notes',      inp('text', sl.notes, v => sl.notes = v, 'Optional', 'w-md')));
+  }
+
+  function resourceRow(c, rc) {
+    c.appendChild(field('Title',      inp('text', rc.title, v => rc.title = v, 'Resource title', 'w-lg')));
+    c.appendChild(field('File (PDF)', inp('text', rc.file,  v => rc.file  = v, 'docs/file.pdf', 'w-md')));
+    c.appendChild(field('Notes',      inp('text', rc.notes, v => rc.notes = v, 'Optional', 'w-md')));
+  }
+
+  // ── Course card editor ────────────────────────────────────────
+  function courseCard(course, onRemove) {
+    course.homework  = course.homework  || [];
+    course.exams     = course.exams     || [];
+    course.slides    = course.slides    || [];
+    course.resources = course.resources || [];
+
+    const card = el('div', 'ecourse collapsed');
+
+    // — Header
+    const hdr = el('div', 'ecourse-hdr');
+    const chevron = el('span', 'section-chevron'); chevron.textContent = '▾';
+    const titleSpan = el('span', 'ecourse-hdr-title');
+    titleSpan.appendChild(chevron);
+    const titleText = document.createTextNode(cardTitle(course));
+    titleSpan.appendChild(titleText);
+
+    function cardTitle(c) {
+      return (c.code ? c.code + ' — ' : '') + (c.name || 'New Course');
+    }
+
+    hdr.appendChild(titleSpan);
+    hdr.appendChild(mkBtn('Remove', 'rm-btn', onRemove));
+    hdr.addEventListener('click', e => {
+      if (e.target.classList.contains('rm-btn')) return;
+      card.classList.toggle('collapsed');
+    });
+    card.appendChild(hdr);
+
+    // — Body
+    const body = el('div', 'ecourse-body');
+
+    // Basic info row
+    const row1 = el('div', 'field-row');
+    row1.appendChild(field('Course Name *', inp('text', course.name,    v => { course.name    = v; titleText.nodeValue = cardTitle(course); }, 'e.g. Linear Algebra', 'w-xl')));
+    row1.appendChild(field('Code',          inp('text', course.code,    v => { course.code    = v; titleText.nodeValue = cardTitle(course); }, 'e.g. MATH 301', 'w-md')));
+    row1.appendChild(field('Faculty',       inp('text', course.faculty, v => course.faculty   = v, 'Professor name', 'w-md')));
+    row1.appendChild(field('Credits',       inp('number', course.credits, v => course.credits = v ? parseFloat(v) : null, '', 'w-xs')));
+    body.appendChild(row1);
+
+    const row2 = el('div', 'field-row');
+    row2.appendChild(field('Syllabus PDF', inp('text', course.syllabus, v => course.syllabus = v, 'docs/syllabus.pdf', 'w-lg')));
+    body.appendChild(row2);
+
+    const row3 = el('div', 'field-row');
+    row3.appendChild(field('Notes (office hours, reminders…)',
+      txa(course.notes, v => course.notes = v, 'e.g. Office hours: Mon 2–4pm', 2, 'w-full')
+    ));
+    body.appendChild(row3);
+
+    // Sub-sections
+    body.appendChild(mkSubSection('📚 Homework',  course.homework,  (c,i) => homeworkRow(c,i),  { title:'', deadline:'', notes:'', file:'' }));
+    body.appendChild(mkSubSection('📝 Exams',     course.exams,     (c,i) => examRow(c,i),      { type:'', date:'', room:'', notes:'', sampleFile:'' }));
+    body.appendChild(mkSubSection('🎞 Slides',    course.slides,    (c,i) => slideRow(c,i),     { title:'', date:'', file:'', notes:'' }));
+    body.appendChild(mkSubSection('📎 Resources', course.resources, (c,i) => resourceRow(c,i),  { title:'', file:'', notes:'' }));
+
+    card.appendChild(body);
+    return card;
+  }
+
+  // ── Courses section ───────────────────────────────────────────
+  function renderCoursesSection(section) {
+    const panel = el('div', `section-panel${section.collapsed ? ' collapsed' : ''}`);
+
+    const hdr = el('div', 'section-header');
+    const titleEl = el('div', 'section-title'); titleEl.innerHTML = '🎓 ' + section.title;
+    const countSpan = el('span', 'section-count'); countSpan.textContent = String(section.items.length);
+    titleEl.appendChild(countSpan);
+    titleEl.appendChild(el('span', 'section-chevron')).textContent = '▾';
+    hdr.appendChild(titleEl);
+    hdr.addEventListener('click', () => panel.classList.toggle('collapsed'));
+    panel.appendChild(hdr);
+
+    const body = el('div', 'section-body');
+    const list = el('div');
+
+    function rerenderCourses() {
+      list.innerHTML = '';
+      section.items.forEach((course, i) => {
+        list.appendChild(courseCard(course, () => {
+          section.items.splice(i, 1);
+          rerenderCourses();
+          countSpan.textContent = String(section.items.length);
+        }));
+      });
+      list.appendChild(mkBtn('+ Add Course', 'add-course-btn', () => {
+        section.items.push({ name:'New Course', code:'', faculty:'', credits:null, syllabus:'', notes:'', homework:[], exams:[], slides:[], resources:[] });
+        rerenderCourses();
+        countSpan.textContent = String(section.items.length);
+        // Auto-expand the new card
+        const cards = list.querySelectorAll('.ecourse');
+        cards[cards.length - 1].classList.remove('collapsed');
+      }));
+    }
+
+    rerenderCourses();
+    body.appendChild(list);
+    panel.appendChild(body);
+    return panel;
+  }
+
+  // ── Simple section (days / documents / links / notes) ─────────
+  const FIELDS = {
+    days: [
+      { key:'name', label:'Name *',  type:'text',     cls:'w-lg', ph:'Event name' },
+      { key:'date', label:'Date *',  type:'date',     cls:'' },
+      { key:'note', label:'Note',    type:'text',     cls:'w-md', ph:'Optional note' },
+    ],
+    documents: [
+      { key:'title', label:'Title *', type:'text', cls:'w-lg', ph:'Document title' },
+      { key:'file',  label:'File *',  type:'text', cls:'w-md', ph:'docs/file.pdf' },
+      { key:'tag',   label:'Tag',     type:'text', cls:'w-sm', ph:'e.g. Math' },
+    ],
+    links: [
+      { key:'title',       label:'Title *',     type:'text', cls:'w-lg', ph:'Link title' },
+      { key:'url',         label:'URL *',       type:'url',  cls:'w-xl', ph:'https://...' },
+      { key:'description', label:'Description', type:'text', cls:'w-md', ph:'Optional' },
+      { key:'tag',         label:'Tag',         type:'text', cls:'w-sm', ph:'Optional' },
+    ],
+    notes: [
+      { key:'title', label:'Title *',   type:'text',     cls:'w-lg', ph:'Note title' },
+      { key:'body',  label:'Content *', type:'textarea', cls:'w-full', ph:'Note content…', rows:3 },
+    ],
+  };
+
+  function renderSimpleSection(section) {
+    const fields = FIELDS[section.type] || [];
+    const defItem = {};
+    fields.forEach(f => { defItem[f.key] = ''; });
+
+    const panel = el('div', `section-panel${section.collapsed ? ' collapsed' : ''}`);
+    const icons = { days:'📅', documents:'📁', links:'🔗', notes:'📝' };
+
+    const hdr = el('div', 'section-header');
+    const titleEl = el('div', 'section-title');
+    titleEl.innerHTML = `${icons[section.type] || '▪'} ${section.title}`;
+    const countSpan = el('span', 'section-count'); countSpan.textContent = String(section.items.length);
+    titleEl.appendChild(countSpan);
+    titleEl.appendChild(el('span', 'section-chevron')).textContent = '▾';
+    hdr.appendChild(titleEl);
+    hdr.addEventListener('click', () => panel.classList.toggle('collapsed'));
+    panel.appendChild(hdr);
+
+    const body = el('div', 'section-body');
+    const list = el('div');
+
+    function rerender() {
+      list.innerHTML = '';
+      section.items.forEach((item, i) => {
+        const row = el('div', 'eitem');
+        const inputs = el('div', 'eitem-inputs');
+
+        fields.forEach(f => {
+          if (f.type === 'textarea') {
+            inputs.appendChild(field(f.label, txa(item[f.key], v => item[f.key] = v, f.ph, f.rows || 2, f.cls)));
+          } else {
+            inputs.appendChild(field(f.label, inp(f.type, item[f.key], v => item[f.key] = v, f.ph, f.cls)));
+          }
+        });
+
+        row.appendChild(inputs);
+        row.appendChild(mkBtn('✕', 'rm-btn', () => {
+          section.items.splice(i, 1);
+          rerender();
+          countSpan.textContent = String(section.items.length);
+        }));
+        list.appendChild(row);
+      });
+
+      list.appendChild(mkBtn('+ Add', 'add-btn', () => {
+        section.items.push(JSON.parse(JSON.stringify(defItem)));
+        rerender();
+        countSpan.textContent = String(section.items.length);
+      }));
+    }
+
+    rerender();
+    body.appendChild(list);
+    panel.appendChild(body);
+    return panel;
+  }
+
+  // ── Main render ───────────────────────────────────────────────
+  function renderAll() {
+    const editor = document.getElementById('editor');
+    editor.innerHTML = '';
+    for (const section of state.sections) {
+      editor.appendChild(
+        section.type === 'courses'
+          ? renderCoursesSection(section)
+          : renderSimpleSection(section)
+      );
+    }
+  }
+
+  // ── Save ──────────────────────────────────────────────────────
+  async function save() {
+    const btn = document.getElementById('save-btn');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      const res = await fetch('/api/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(state)
+      });
+      if (res.ok) {
+        toast('✓ Saved!', false);
+      } else {
+        const e = await res.json();
+        toast('Error: ' + (e.error || 'unknown'), true);
+      }
+    } catch {
+      toast('Save failed — is server.py running?', true);
+    } finally {
+      btn.disabled = false; btn.textContent = '💾 Save';
+    }
+  }
+
+  // ── Toast ─────────────────────────────────────────────────────
+  function toast(msg, isErr) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.style.background = isErr ? '#e63946' : '#1a1d27';
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 2400);
+  }
+
+  // ── Theme ─────────────────────────────────────────────────────
+  (function () {
+    const btn = document.getElementById('theme-toggle');
+    const saved = localStorage.getItem('theme');
+    const dark = saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+    function apply(d) {
+      document.documentElement.setAttribute('data-theme', d ? 'dark' : 'light');
+      btn.textContent = d ? '☀' : '☾';
+      localStorage.setItem('theme', d ? 'dark' : 'light');
+    }
+    apply(dark);
+    btn.addEventListener('click', () => apply(document.documentElement.getAttribute('data-theme') !== 'dark'));
+  })();
+
+  // ── Boot ──────────────────────────────────────────────────────
+  document.getElementById('save-btn').addEventListener('click', save);
+
+  fetch('/api/data')
+    .then(r => r.json())
+    .then(data => { state = data; renderAll(); })
+    .catch(() => {
+      document.getElementById('editor').innerHTML =
+        `<p style="padding:2rem;color:var(--danger)">
+           Cannot load data.<br>
+           Make sure you are running <code>python3 server.py</code>,
+           not a plain HTTP server.
+         </p>`;
+    });
+  </script>
+</body>
+</html>

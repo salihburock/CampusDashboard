@@ -1,0 +1,362 @@
+/* Admin panel — builds on variables from style.css */
+
+.admin-main {
+  gap: 1.25rem;
+}
+
+/* ── Admin card (top-level panels) ────────────────────────── */
+.admin-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.admin-card h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.admin-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* ── Section blocks ────────────────────────────────────────── */
+.admin-section {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: .75rem;
+}
+
+.admin-section:last-child { margin-bottom: 0; }
+
+.admin-section-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .5rem;
+  padding: .75rem 1rem;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.section-title-input {
+  width: 180px;
+  font-weight: 600;
+}
+
+.section-move-btns {
+  display: flex;
+  gap: .2rem;
+}
+
+.admin-items {
+  padding: .75rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: .6rem;
+}
+
+.section-footer {
+  padding: .5rem 1rem .75rem;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+
+/* ── Item rows ─────────────────────────────────────────────── */
+.admin-item {
+  display: flex;
+  align-items: flex-start;
+  gap: .5rem;
+  padding: .75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.item-fields {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: .4rem;
+}
+
+.field-full {
+  grid-column: 1 / -1;
+}
+
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: .15rem;
+}
+
+/* ── Form controls ─────────────────────────────────────────── */
+.field-label {
+  font-size: .875rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.field-label-sm {
+  font-size: .75rem;
+  color: var(--muted);
+  display: block;
+}
+
+.field-input,
+.field-select,
+.field-textarea {
+  width: 100%;
+  padding: .4rem .6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: .85rem;
+  transition: border-color .15s, box-shadow .15s;
+}
+
+.field-input:focus,
+.field-select:focus,
+.field-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-dim);
+}
+
+.field-textarea {
+  resize: vertical;
+  min-height: 72px;
+  line-height: 1.5;
+}
+
+/* ── Buttons ───────────────────────────────────────────────── */
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: .45rem 1rem;
+  font-size: .875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity .15s;
+}
+.btn-primary:hover   { opacity: .85; }
+.btn-primary:disabled { opacity: .5; cursor: not-allowed; }
+
+.btn-secondary {
+  background: var(--tag-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: .4rem .85rem;
+  font-size: .82rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background .15s;
+}
+.btn-secondary:hover { background: var(--border); }
+
+.btn-danger {
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  padding: .35rem .7rem;
+  font-size: .8rem;
+  cursor: pointer;
+  transition: background .15s;
+  white-space: nowrap;
+}
+.btn-danger:hover { background: #fde8ea; }
+[data-theme="dark"] .btn-danger:hover { background: #3a1a1d; }
+
+.btn-sm  { padding: .28rem .6rem; font-size: .78rem; }
+.btn-icon { padding: .28rem .42rem; }
+
+/* ── Toggle checkbox label ─────────────────────────────────── */
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+  font-size: .82rem;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* ── PDF list ──────────────────────────────────────────────── */
+.upload-area {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  flex-wrap: wrap;
+}
+
+.pdf-item {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  padding: .45rem .75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: .82rem;
+}
+
+.pdf-name { font-weight: 600; }
+.pdf-path { flex: 1; }
+.muted    { color: var(--muted); }
+
+/* ── Empty state messages ──────────────────────────────────── */
+.empty-msg {
+  color: var(--muted);
+  font-size: .82rem;
+  font-style: italic;
+  padding: .35rem 0;
+}
+.empty-msg.small { font-size: .75rem; padding: .15rem 0; }
+
+/* ── Toast notification ────────────────────────────────────── */
+.toast {
+  position: fixed;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  padding: .65rem 1.1rem;
+  border-radius: 8px;
+  font-size: .875rem;
+  font-weight: 500;
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity .2s, transform .2s;
+  pointer-events: none;
+  z-index: 500;
+}
+.toast.show    { opacity: 1; transform: translateY(0); }
+.toast.success { background: var(--ok);     color: #fff; }
+.toast.error   { background: var(--danger); color: #fff; }
+
+/* ── Course admin item ─────────────────────────────────────── */
+.course-admin-item {
+  flex-direction: column;
+  gap: .85rem;
+  align-items: stretch;
+}
+
+.course-admin-header {
+  display: grid;
+  grid-template-columns: 1fr 1fr 80px 1fr;
+  gap: .4rem;
+  align-items: start;
+}
+
+.course-syllabus-row {
+  display: flex;
+  flex-direction: column;
+  gap: .3rem;
+}
+
+.syllabus-controls {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  flex-wrap: wrap;
+}
+
+/* ── Course autocomplete ───────────────────────────────────── */
+.autocomplete-wrapper {
+  position: relative;
+}
+
+.autocomplete-list {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,.12);
+  z-index: 50;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.ac-item {
+  display: flex;
+  align-items: baseline;
+  gap: .5rem;
+  padding: .45rem .7rem;
+  cursor: pointer;
+  font-size: .82rem;
+  border-bottom: 1px solid var(--border);
+}
+.ac-item:last-child { border-bottom: none; }
+.ac-item:hover { background: var(--bg); }
+
+.ac-code {
+  font-weight: 700;
+  color: var(--accent);
+  white-space: nowrap;
+  min-width: 70px;
+}
+.ac-name { color: var(--muted); }
+
+/* ── Course sub-sections ───────────────────────────────────── */
+.course-sub-section {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.sub-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: .4rem .75rem;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.sub-section-title {
+  font-size: .78rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.sub-items {
+  padding: .5rem .75rem;
+  display: flex;
+  flex-direction: column;
+  gap: .4rem;
+}
+
+.sub-item {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr auto;
+  gap: .35rem;
+  align-items: start;
+}
+
+.sub-delete { align-self: end; margin-bottom: 2px; }
+
+/* ── Mobile ────────────────────────────────────────────────── */
+@media (max-width: 600px) {
+  .item-fields { grid-template-columns: 1fr; }
+  .admin-section-header { flex-direction: column; align-items: flex-start; }
+  .section-title-input { width: 100%; }
+}

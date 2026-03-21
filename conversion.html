@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>File Conversion</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="conversion.css" />
+</head>
+<body>
+
+  <header class="site-header">
+    <div class="header-left">
+      <h1>File Conversion</h1>
+    </div>
+    <div class="header-right">
+      <a href="/" class="icon-btn" title="Back to dashboard">← Dashboard</a>
+      <button id="theme-toggle" class="icon-btn" title="Toggle dark mode">☾</button>
+    </div>
+  </header>
+
+  <main class="container conv-main">
+
+    <div class="conv-card">
+      <!-- Drop zone -->
+      <div id="drop-zone" class="drop-zone">
+        <div class="drop-icon">📂</div>
+        <div class="drop-text">Drop a file here, or <label for="file-input" class="drop-link">browse</label></div>
+        <input type="file" id="file-input" style="display:none">
+        <div id="file-name" class="file-name" style="display:none"></div>
+      </div>
+
+      <!-- Format selector -->
+      <div id="format-row" class="format-row" style="display:none">
+        <span class="format-label">Convert to</span>
+        <div id="format-btns" class="format-btns"></div>
+      </div>
+
+      <!-- Unsupported notice -->
+      <div id="unsupported" class="unsupported-msg" style="display:none">
+        This file type is not supported for conversion.
+      </div>
+
+      <!-- Convert button -->
+      <button id="convert-btn" class="btn-primary conv-btn" style="display:none"
+              onclick="startConversion()">Convert &amp; Download</button>
+
+      <!-- Progress -->
+      <div id="progress" class="progress-row" style="display:none">
+        <div class="spinner"></div>
+        <span id="progress-text">Converting…</span>
+      </div>
+    </div>
+
+    <!-- Supported formats reference -->
+    <div class="conv-card formats-reference">
+      <h2>Supported Conversions</h2>
+      <div id="formats-grid" class="formats-grid"></div>
+    </div>
+
+  </main>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="conversion.js"></script>
+</body>
+</html>

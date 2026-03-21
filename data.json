@@ -1,0 +1,125 @@
+{
+  "title": "2025-2026 Spring",
+  "sections": [
+    {
+      "title": "Courses",
+      "type": "courses",
+      "collapsed": false,
+      "items": [
+        {
+          "code": "MATH 112",
+          "name": "Ayrık Matematik",
+          "credits": "6",
+          "faculty": "Mühendislik Fakültesi",
+          "syllabus": "docs/syllabus.pdf",
+          "slides": [
+            {
+              "title": "Logic",
+              "file": "docs/logic.pdf",
+              "date": "",
+              "notes": "1"
+            }
+          ],
+          "homework": [],
+          "exams": [
+            {
+              "type": "Midterm",
+              "date": "2026-03-25",
+              "room": "",
+              "sampleFile": "",
+              "notes": ""
+            }
+          ],
+          "resources": [],
+          "notes": "Öğrenciler hem teorik ve hem gerçek-dünya problemlerini matematiksel soyutlama yoluyla modeller ve bu problemlere en iyi ya da en iyiye yaklaşık çözüm geliştirirler. Öğrencilerin küme, matris, mantık denklemleri, özyinelemeli fonksiyonlar, ve çizgeleri tanır hale gelmeleri beklenir. Bilgisayar mühendisliğinde kullanılan bazı temel matematiksel kavramlar işlenir. Kapsanan konular arasında mantık ve kanıtlar, küme kuramı, bağıntı ve fonksiyonlar, tümevarım ve özyineleme, sayma kuramı, permütasyon, ayrık olasılık, çizge ve ağaç yapıları ile Boolean cebir yer alır. "
+        }
+      ]
+    },
+    {
+      "title": "Exams",
+      "type": "days",
+      "collapsed": false,
+      "items": [
+        {
+          "name": "EE204.1",
+          "date": "2026-03-17",
+          "note": ""
+        },
+        {
+          "name": "EE202.1",
+          "date": "2026-03-24",
+          "note": ""
+        },
+        {
+          "name": "MATH217.1",
+          "date": "2026-03-28",
+          "note": ""
+        },
+        {
+          "name": "MATH217.2",
+          "date": "2026-05-02",
+          "note": ""
+        },
+        {
+          "name": "EE321.1",
+          "date": "2026-04-06",
+          "note": ""
+        },
+        {
+          "name": "EE302",
+          "date": "2026-04-02",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "title": "Syllabus",
+      "type": "documents",
+      "collapsed": false,
+      "items": [
+        {
+          "title": "EE202",
+          "file": "docs/84900000312017280.pdf",
+          "tag": ""
+        },
+        {
+          "title": "EE204",
+          "file": "docs/ee204.pdf",
+          "tag": ""
+        },
+        {
+          "title": "EE302",
+          "file": "docs/84900000291068820__4_.pdf",
+          "tag": ""
+        },
+        {
+          "title": "EE321",
+          "file": "docs/321.pdf",
+          "tag": ""
+        },
+        {
+          "title": "MATH112",
+          "file": "docs/syllabus.pdf",
+          "tag": ""
+        },
+        {
+          "title": "MATH217",
+          "file": "docs/Syllabus_2026_Spring_ENG_cha.pdf",
+          "tag": ""
+        }
+      ]
+    },
+    {
+      "title": "Quick Links",
+      "type": "links",
+      "collapsed": true,
+      "items": []
+    },
+    {
+      "title": "Notes",
+      "type": "notes",
+      "collapsed": true,
+      "items": []
+    }
+  ]
+}
