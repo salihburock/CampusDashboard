@@ -59,7 +59,7 @@ function extractPdfText(filePath) {
     // -f 1 -l 3: first 3 pages only; - : output to stdout
     execFile('pdftotext', ['-f', '1', '-l', '3', filePath, '-'], (err, stdout) => {
       if (err || !stdout) return resolve(null);
-      resolve(stdout.slice(0, 3000).trim() || null);
+      resolve(stdout.slice(0, 100).trim() || null);
     });
   });
 }

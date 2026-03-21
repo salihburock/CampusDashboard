@@ -206,7 +206,7 @@
     clearInterval(pollTimer);
     let tries = 0;
     pollTimer = setInterval(async () => {
-      if (++tries > 40) { clearInterval(pollTimer); return; }
+      if (++tries > 150) { clearInterval(pollTimer); return; }
       try {
         const r = await fetch(`/api/upload/stage/${id}`);
         const d = await r.json();
