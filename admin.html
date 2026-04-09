@@ -41,11 +41,29 @@
 
     <!-- PDF / Document Library -->
     <div class="admin-card">
-      <h2>Document Library</h2>
+      <div class="admin-card-header">
+        <h2>Document Library</h2>
+        <label class="btn-secondary btn-sm" style="cursor:pointer" title="Import a Moodle course ZIP archive">
+          📦 Import Moodle ZIP
+          <input id="moodle-zip-input" type="file" accept=".zip" style="display:none"
+                 onchange="handleMoodleZipSelected(this)">
+        </label>
+      </div>
       <p style="font-size:.8rem;color:var(--muted);margin:.25rem 0 .75rem">
         Drag &amp; drop files anywhere on this page to upload and name them.
       </p>
       <div id="pdf-list"></div>
+    </div>
+
+    <!-- Moodle Import Modal -->
+    <div id="moodle-modal" class="moodle-modal-backdrop hidden">
+      <div class="moodle-modal-box">
+        <div class="moodle-modal-header">
+          <h3 id="moodle-modal-title">Moodle Import</h3>
+          <button class="icon-btn" onclick="closeMoodleModal()">✕</button>
+        </div>
+        <div id="moodle-modal-body" class="moodle-modal-body"></div>
+      </div>
     </div>
 
   </main>

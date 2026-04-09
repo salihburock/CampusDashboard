@@ -574,6 +574,269 @@ function courseItemHtml(item, si, ii) {
     </div>`;
 }
 
+// ── Moodle ZIP Import ─────────────────────────────────────────
+let _moodleResult = null; // { zipName, weeks, totalFiles, _flat[] }
+
+const MOODLE_TYPES = ['slides', 'syllabus', 'homework', 'exam', 'resources', 'skip'];
+const MOODLE_TYPE_LABELS = {
+  slides:    'Slides',
+  syllabus:  'Syllabus',
+  homework:  'Homework',
+  exam:      'Exam',
+  resources: 'Resources',
+  skip:      'Skip',
+};
+
+function detectMoodleType(fileName, weekName) {
+  const hay = (fileName + ' ' + weekName).toLowerCase();
+  if (/syllabus|ders.?izlencesi|müfredat/.test(hay))              return 'syllabus';
+  if (/\b(hw|homework|assignment|ödev|problem.?set|\bps\d)\b/.test(hay)) return 'homework';
+  if (/\b(exam|quiz|midterm|final|vize|test|sınav)\b/.test(hay)) return 'exam';
+  if (/\b(lab|laboratory|deney)\b/.test(hay))                     return 'resources';
+  return 'slides';
+}
+
+function closeMoodleModal() {
+  document.getElementById('moodle-modal').classList.add('hidden');
+  document.getElementById('moodle-zip-input').value = '';
+  _moodleResult = null;
+}
+
+async function handleMoodleZipSelected(input) {
+  const file = input.files[0];
+  if (!file) return;
+
+  const modal = document.getElementById('moodle-modal');
+  const body  = document.getElementById('moodle-modal-body');
+  const titleEl = document.getElementById('moodle-modal-title');
+
+  titleEl.textContent = 'Importing…';
+  body.innerHTML = '<p class="moodle-hint">Uploading and extracting ZIP…</p>';
+  modal.classList.remove('hidden');
+
+  const fd = new FormData();
+  fd.append('zip', file);
+
+  try {
+    const res  = await fetch('/api/upload/moodle-zip', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Upload failed');
+
+    // Build flat index
+    let idx = 0;
+    data._flat = [];
+    data.weeks.forEach(week => {
+      week.files.forEach(f => data._flat.push({ ...f, weekName: week.name, idx: idx++ }));
+    });
+
+    _moodleResult = data;
+    await loadPdfs();
+    renderMoodleReview(data);
+  } catch (e) {
+    body.innerHTML = `<p style="color:var(--danger,#e63946)">Error: ${esc(e.message)}</p>`;
+    titleEl.textContent = 'Import Failed';
+  }
+}
+
+function renderMoodleReview(data) {
+  const titleEl = document.getElementById('moodle-modal-title');
+  const body    = document.getElementById('moodle-modal-body');
+
+  titleEl.textContent = `${data.zipName} — ${data.totalFiles} PDF${data.totalFiles !== 1 ? 's' : ''} extracted`;
+
+  if (!data.weeks.length) {
+    body.innerHTML = '<p class="moodle-hint">No PDFs found in the ZIP. Make sure the ZIP was created by the Moodle extension.</p>';
+    return;
+  }
+
+  // Course options
+  const courseItems = [];
+  state.sections.forEach((sec, si) => {
+    if (sec.type !== 'courses') return;
+    sec.items.forEach((item, ii) =>
+      courseItems.push({ label: `${item.code || '?'} – ${item.name || 'Unnamed'}`, si, ii })
+    );
+  });
+  const courseOptions = courseItems.length
+    ? courseItems.map((c, i) => `<option value="${i}">${esc(c.label)}</option>`).join('')
+    : '<option value="">— add a course to the dashboard first —</option>';
+
+  // Type select options HTML (reused per row)
+  const typeOpts = MOODLE_TYPES.map(t =>
+    `<option value="${t}">${MOODLE_TYPE_LABELS[t]}</option>`
+  ).join('');
+
+  // Week blocks
+  let flatIdx = 0;
+  const weeksHtml = data.weeks.map((week, wi) => {
+    const startIdx = flatIdx;
+    const filesHtml = week.files.map(f => {
+      const idx      = flatIdx++;
+      const autoType = detectMoodleType(f.originalName, week.name);
+      const title    = f.originalName.replace(/\.pdf$/i, '').replace(/[_-]/g, ' ').trim();
+      const selOpts  = MOODLE_TYPES.map(t =>
+        `<option value="${t}" ${t === autoType ? 'selected' : ''}>${MOODLE_TYPE_LABELS[t]}</option>`
+      ).join('');
+      return `
+        <div class="moodle-file-row" id="mfrow-${idx}">
+          <input type="checkbox" id="mf-cb-${idx}" data-wi="${wi}" data-idx="${idx}" checked
+                 onchange="onMoodleFileCbChange(${idx}, this.checked)">
+          <input type="text" class="field-input moodle-title-inp" id="mf-title-${idx}"
+                 value="${esc(title)}">
+          <select class="field-select moodle-type-sel" id="mf-type-${idx}"
+                  onchange="onMoodleTypeChange(${idx}, this.value)">
+            ${selOpts}
+          </select>
+          <span class="moodle-type-badge moodle-badge-${autoType}" id="mf-badge-${idx}">${MOODLE_TYPE_LABELS[autoType]}</span>
+        </div>`;
+    }).join('');
+    const endIdx = flatIdx - 1;
+
+    return `
+      <div class="moodle-week">
+        <div class="moodle-week-header">
+          <input type="checkbox" id="mw-cb-${wi}" checked
+                 onchange="toggleMoodleWeek(${wi}, this.checked)">
+          <label for="mw-cb-${wi}" style="cursor:pointer;flex:1">${esc(week.name)}</label>
+          <span class="moodle-week-count">${week.files.length} file${week.files.length !== 1 ? 's' : ''}</span>
+          <select class="field-select moodle-week-type-sel" style="width:auto;font-size:.75rem"
+                  onchange="setMoodleWeekType(${wi}, ${startIdx}, ${endIdx}, this.value)">
+            <option value="">Set all…</option>
+            ${typeOpts}
+          </select>
+        </div>
+        <div class="moodle-file-list">${filesHtml}</div>
+      </div>`;
+  }).join('');
+
+  body.innerHTML = `
+    <p class="moodle-hint">
+      Files are auto-categorized by filename. Adjust types and titles before importing.
+      Each category maps to the matching field in the course (Slides, Homework, Exams, Resources, or Syllabus).
+    </p>
+    ${weeksHtml}
+    <div class="moodle-import-bar">
+      <label class="moodle-bar-label">Import into:</label>
+      <select id="moodle-course-sel" class="field-select">${courseOptions}</select>
+      <button class="btn-primary btn-sm" onclick="confirmMoodleImport()"
+              ${!courseItems.length ? 'disabled title="Add a course to the dashboard first"' : ''}>
+        Import →
+      </button>
+      <button class="btn-secondary btn-sm" onclick="closeMoodleModal()">Cancel</button>
+    </div>`;
+}
+
+function onMoodleFileCbChange(idx, checked) {
+  const row = document.getElementById(`mfrow-${idx}`);
+  if (row) row.classList.toggle('moodle-row-dim', !checked);
+  // If unchecked, flip type to skip; if re-checked, restore previous non-skip value
+  const sel = document.getElementById(`mf-type-${idx}`);
+  if (sel) {
+    if (!checked) {
+      sel.dataset.prev = sel.value;
+      sel.value = 'skip';
+    } else {
+      sel.value = sel.dataset.prev || 'slides';
+    }
+    updateMoodleBadge(idx, sel.value);
+  }
+}
+
+function onMoodleTypeChange(idx, value) {
+  updateMoodleBadge(idx, value);
+  // Sync checkbox
+  const cb = document.getElementById(`mf-cb-${idx}`);
+  if (cb) {
+    cb.checked = value !== 'skip';
+    document.getElementById(`mfrow-${idx}`)?.classList.toggle('moodle-row-dim', value === 'skip');
+  }
+}
+
+function updateMoodleBadge(idx, type) {
+  const badge = document.getElementById(`mf-badge-${idx}`);
+  if (!badge) return;
+  badge.textContent  = MOODLE_TYPE_LABELS[type] || type;
+  badge.className    = `moodle-type-badge moodle-badge-${type}`;
+}
+
+function toggleMoodleWeek(wi, checked) {
+  document.querySelectorAll(`[data-wi="${wi}"][data-idx]`).forEach(cb => {
+    cb.checked = checked;
+    onMoodleFileCbChange(parseInt(cb.dataset.idx), checked);
+  });
+}
+
+function setMoodleWeekType(wi, startIdx, endIdx, type) {
+  if (!type) return;
+  for (let idx = startIdx; idx <= endIdx; idx++) {
+    const sel = document.getElementById(`mf-type-${idx}`);
+    const cb  = document.getElementById(`mf-cb-${idx}`);
+    if (!sel) continue;
+    sel.value = type;
+    onMoodleTypeChange(idx, type);
+    if (cb) cb.checked = type !== 'skip';
+  }
+  // Reset the "Set all…" select back to placeholder
+  const weekSel = document.querySelector(`#moodle-modal [onchange*="setMoodleWeekType(${wi},"]`);
+  if (weekSel) weekSel.value = '';
+}
+
+async function confirmMoodleImport() {
+  if (!_moodleResult) return;
+
+  const courseItems = [];
+  state.sections.forEach((sec, si) => {
+    if (sec.type !== 'courses') return;
+    sec.items.forEach((item, ii) => courseItems.push({ si, ii }));
+  });
+
+  const selIdx      = parseInt(document.getElementById('moodle-course-sel').value);
+  const { si, ii }  = courseItems[selIdx];
+  const target      = state.sections[si].items[ii];
+
+  // Ensure arrays exist
+  ['slides', 'homework', 'exams', 'resources'].forEach(k => { if (!target[k]) target[k] = []; });
+
+  let count = 0;
+  _moodleResult._flat.forEach(f => {
+    const idx  = f.idx;
+    const cb   = document.getElementById(`mf-cb-${idx}`);
+    if (!cb || !cb.checked) return;
+
+    const type  = document.getElementById(`mf-type-${idx}`)?.value || 'skip';
+    if (type === 'skip') return;
+
+    const title = document.getElementById(`mf-title-${idx}`)?.value.trim()
+                  || f.originalName.replace(/\.pdf$/i, '');
+
+    switch (type) {
+      case 'syllabus':
+        target.syllabus = f.path;
+        break;
+      case 'slides':
+        target.slides.push({ title, file: f.path, date: '', notes: f.weekName });
+        break;
+      case 'homework':
+        target.homework.push({ title, deadline: '', file: f.path, notes: f.weekName });
+        break;
+      case 'exam':
+        target.exams.push({ type: 'Midterm', date: '', room: '', sampleFile: f.path, notes: title });
+        break;
+      case 'resources':
+        target.resources.push({ title, file: f.path, notes: f.weekName });
+        break;
+    }
+    count++;
+  });
+
+  if (!count) { showToast('No files selected', true); return; }
+
+  await saveData();
+  showToast(`Imported ${count} file${count !== 1 ? 's' : ''}`);
+  closeMoodleModal();
+  renderSections();
+}
+
 // ── Theme ─────────────────────────────────────────────────────
 (function setupTheme() {
   const btn = document.getElementById('theme-toggle');

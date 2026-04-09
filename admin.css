@@ -354,6 +354,127 @@
 
 .sub-delete { align-self: end; margin-bottom: 2px; }
 
+/* ── Moodle Import Modal ───────────────────────────────────── */
+.moodle-modal-backdrop {
+  position: fixed; inset: 0; z-index: 9000;
+  background: rgba(0,0,0,.5);
+  backdrop-filter: blur(4px);
+  display: flex; align-items: center; justify-content: center;
+}
+.moodle-modal-backdrop.hidden { display: none; }
+
+.moodle-modal-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0,0,0,.25);
+  width: min(96vw, 680px);
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.moodle-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.moodle-modal-header h3 { margin: 0; font-size: .95rem; }
+
+.moodle-modal-body {
+  padding: 1rem 1.25rem;
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: .75rem;
+}
+
+.moodle-week {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.moodle-week-header {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .45rem .75rem;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  font-size: .8rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.moodle-week-count {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+.moodle-file-list {
+  padding: .4rem .75rem;
+  display: flex;
+  flex-direction: column;
+  gap: .3rem;
+}
+.moodle-file-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: .4rem;
+  padding: .1rem 0;
+  transition: opacity .15s;
+}
+.moodle-file-row.moodle-row-dim { opacity: .35; }
+.moodle-file-row input[type=checkbox] { flex-shrink: 0; }
+.moodle-title-inp {
+  font-size: .8rem;
+  padding: .2rem .45rem;
+  min-width: 0;
+}
+.moodle-type-sel {
+  font-size: .78rem;
+  padding: .2rem .35rem;
+  min-width: 105px;
+}
+.moodle-type-badge {
+  font-size: .68rem;
+  font-weight: 700;
+  padding: .15rem .45rem;
+  border-radius: 4px;
+  white-space: nowrap;
+  color: #fff;
+  min-width: 62px;
+  text-align: center;
+}
+.moodle-badge-slides    { background: #3b82f6; }
+.moodle-badge-syllabus  { background: #8b5cf6; }
+.moodle-badge-homework  { background: #f59e0b; color: #1a1a1a; }
+.moodle-badge-exam      { background: #ef4444; }
+.moodle-badge-resources { background: #10b981; }
+.moodle-badge-skip      { background: #9ca3af; }
+
+.moodle-import-bar {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  flex-wrap: wrap;
+  padding: .75rem 1.25rem;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  flex-shrink: 0;
+}
+.moodle-import-bar > .field-select { flex: 1; min-width: 160px; }
+.moodle-bar-label { font-size: .82rem; font-weight: 600; white-space: nowrap; }
+.moodle-hint { font-size: .8rem; color: var(--muted); margin: 0; }
+
 /* ── Mobile ────────────────────────────────────────────────── */
 @media (max-width: 600px) {
   .item-fields { grid-template-columns: 1fr; }

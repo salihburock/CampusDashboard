@@ -3,9 +3,15 @@ let selectedFormat = null;
 let supportedFormats = {};
 
 const FORMAT_LABELS = {
-  pdf:  'PDF',  docx: 'DOCX', doc:  'DOC',
-  mp4:  'MP4',  mkv:  'MKV',  avi:  'AVI',
-  xlsx: 'XLSX', xls:  'XLS',  csv:  'CSV',
+  // Documents
+  pdf: 'PDF', docx: 'DOCX', doc: 'DOC',
+  xlsx: 'XLSX', xls: 'XLS', csv: 'CSV',
+  // Video
+  mp4: 'MP4', mkv: 'MKV', webm: 'WebM', avi: 'AVI',
+  mov: 'MOV', wmv: 'WMV', flv:  'FLV',  ts:  'TS', m4v: 'M4V',
+  // Audio
+  mp3: 'MP3', wav: 'WAV', ogg: 'OGG',
+  m4a: 'M4A', flac: 'FLAC', aac: 'AAC',
 };
 
 // ── Init ──────────────────────────────────────────────────────
@@ -114,8 +120,10 @@ async function startConversion() {
 function renderFormatsReference() {
   const ICONS = {
     pdf: '📄', docx: '📝', doc: '📝',
-    mp4: '🎬', mkv: '🎬', avi: '🎬', mov: '🎬',
     xlsx: '📊', xls: '📊', csv: '📋',
+    mp4: '🎬', mkv: '🎬', webm: '🎬', avi: '🎬',
+    mov: '🎬', wmv: '🎬', flv: '🎬', ts: '🎬', m4v: '🎬',
+    mp3: '🎵', wav: '🎵', ogg: '🎵', m4a: '🎵', flac: '🎵', aac: '🎵',
   };
 
   document.getElementById('formats-grid').innerHTML = Object.entries(supportedFormats)

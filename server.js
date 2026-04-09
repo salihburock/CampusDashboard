@@ -5,6 +5,7 @@ const fs           = require('fs');
 const os           = require('os');
 const crypto       = require('crypto');
 const { execFile } = require('child_process');
+const AdmZip       = require('adm-zip');
 
 const app       = express();
 const PORT      = process.env.PORT || 3000;
@@ -255,10 +256,24 @@ const uploadConv = multer({
 
 // ── Conversion helpers ────────────────────────────────────────
 const SUPPORTED_CONVERSIONS = {
-  mkv:  ['mp4'],
-  mp4:  ['mkv'],
-  avi:  ['mp4', 'mkv'],
-  mov:  ['mp4'],
+  // Video
+  mp4:  ['mkv', 'webm', 'avi', 'mov'],
+  mkv:  ['mp4', 'webm', 'avi'],
+  webm: ['mp4', 'mkv'],
+  avi:  ['mp4', 'mkv', 'webm'],
+  mov:  ['mp4', 'mkv', 'webm'],
+  wmv:  ['mp4', 'mkv'],
+  flv:  ['mp4', 'mkv'],
+  ts:   ['mp4', 'mkv'],
+  m4v:  ['mp4', 'mkv'],
+  // Audio
+  mp3:  ['wav', 'ogg', 'm4a', 'flac'],
+  wav:  ['mp3', 'ogg', 'm4a', 'flac'],
+  ogg:  ['mp3', 'wav', 'flac'],
+  m4a:  ['mp3', 'wav', 'ogg'],
+  flac: ['mp3', 'wav', 'ogg'],
+  aac:  ['mp3', 'wav', 'm4a'],
+  // Documents
   doc:  ['pdf'],
   docx: ['pdf'],
   pdf:  ['docx'],
@@ -267,7 +282,8 @@ const SUPPORTED_CONVERSIONS = {
   csv:  ['xlsx', 'xls'],
 };
 
-const VIDEO_EXTS = new Set(['mkv', 'mp4', 'avi', 'mov']);
+const VIDEO_EXTS = new Set(['mp4', 'mkv', 'webm', 'avi', 'mov', 'wmv', 'flv', 'ts', 'm4v']);
+const AUDIO_EXTS = new Set(['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac']);
 
 function convertFile(inputPath, targetExt, outDir) {
   return new Promise((resolve, reject) => {
@@ -275,10 +291,14 @@ function convertFile(inputPath, targetExt, outDir) {
     const baseName = path.basename(inputPath, path.extname(inputPath));
     const outputPath = path.join(outDir, `${baseName}.${targetExt}`);
 
-    if (VIDEO_EXTS.has(srcExt)) {
-      // ffmpeg: remux (copy streams, no re-encode for speed)
-      execFile('ffmpeg', ['-i', inputPath, '-c', 'copy', '-y', outputPath],
-        { timeout: 600000 },
+    if (VIDEO_EXTS.has(srcExt) || AUDIO_EXTS.has(srcExt)) {
+      // For audio: always re-encode (containers differ too much for copy)
+      // For video: try stream copy first; webm always needs re-encode
+      const needsEncode = AUDIO_EXTS.has(srcExt) || targetExt === 'webm' || srcExt === 'webm';
+      const args = needsEncode
+        ? ['-i', inputPath, '-y', outputPath]
+        : ['-i', inputPath, '-c', 'copy', '-y', outputPath];
+      execFile('ffmpeg', args, { timeout: 600000 },
         (err) => err ? reject(err) : resolve(outputPath));
     } else {
       // LibreOffice: handles doc/docx/pdf/xls/xlsx/csv
@@ -500,6 +520,69 @@ app.post('/api/conversion/convert', uploadConv.single('file'), async (req, res) 
   } catch (e) {
     try { fs.unlinkSync(tmpPath); } catch {}
     res.status(500).json({ error: `Conversion failed: ${e.message}` });
+  }
+});
+
+// ── API: Moodle ZIP import ────────────────────────────────────
+const moodleZipStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, os.tmpdir()),
+  filename:    (req, file, cb) => {
+    const safe = file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+    cb(null, `moodle_${Date.now()}_${safe}`);
+  }
+});
+const uploadMoodleZip = multer({
+  storage: moodleZipStorage,
+  fileFilter: (req, file, cb) => cb(null, path.extname(file.originalname).toLowerCase() === '.zip'),
+  limits: { fileSize: 500 * 1024 * 1024 }
+});
+
+app.post('/api/upload/moodle-zip', uploadMoodleZip.single('zip'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No ZIP file received' });
+
+  const zipPath    = req.file.path;
+  const zipBaseName = path.basename(req.file.originalname, '.zip');
+
+  try {
+    const zip     = new AdmZip(zipPath);
+    const entries = zip.getEntries();
+    const weeks   = {}; // folderName -> [{originalName, savedAs, path}]
+
+    for (const entry of entries) {
+      if (entry.isDirectory) continue;
+
+      const entryName = entry.entryName.replace(/\\/g, '/');
+      const parts     = entryName.split('/').filter(Boolean);
+      if (parts.length < 2) continue; // skip root-level files (index.html, etc.)
+
+      const weekFolder = parts[0];
+      const fileName   = parts[parts.length - 1];
+      const ext        = path.extname(fileName).toLowerCase();
+
+      if (ext !== '.pdf') continue;
+      if (fileName.startsWith('!_')) continue; // skip error logs
+
+      const safeWeek = weekFolder.replace(/[^a-zA-Z0-9\-_ ]/g, '').trim()
+                                 .replace(/\s+/g, '_').slice(0, 60);
+      const safeFile = fileName.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+      const destName = `${safeWeek}__${safeFile}`;
+      const destPath = path.join(DOCS_DIR, destName);
+
+      fs.writeFileSync(destPath, entry.getData());
+
+      if (!weeks[weekFolder]) weeks[weekFolder] = [];
+      weeks[weekFolder].push({ originalName: fileName, savedAs: destName, path: `docs/${destName}` });
+    }
+
+    try { fs.unlinkSync(zipPath); } catch {}
+
+    const weekList   = Object.entries(weeks).map(([name, files]) => ({ name, files }));
+    const totalFiles = weekList.reduce((s, w) => s + w.files.length, 0);
+    res.json({ zipName: zipBaseName, weeks: weekList, totalFiles });
+
+  } catch (e) {
+    try { fs.unlinkSync(zipPath); } catch {}
+    res.status(500).json({ error: e.message });
   }
 });
 
