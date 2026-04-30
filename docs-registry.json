@@ -1,0 +1,62 @@
+{
+  "syllabus-math112": {
+    "name": "syllabus-math112",
+    "file": "docs/syllabus-math112.pdf",
+    "originalName": "syllabus.pdf",
+    "uploaded": "2026-03-21"
+  },
+  "syllabus-math217": {
+    "name": "syllabus-math217",
+    "file": "docs/syllabus-math217.pdf",
+    "originalName": "Syllabus_2026_Spring_ENG_cha.pdf",
+    "uploaded": "2026-03-21"
+  },
+  "syllabus-ee321": {
+    "name": "syllabus-ee321",
+    "file": "docs/syllabus-ee321.pdf",
+    "originalName": "321.pdf",
+    "uploaded": "2026-03-21"
+  },
+  "syllabus-ee302": {
+    "name": "syllabus-ee302",
+    "file": "docs/syllabus-ee302.pdf",
+    "originalName": "84900000291068820 (4).pdf",
+    "uploaded": "2026-03-21"
+  },
+  "syllabus-ee202": {
+    "name": "syllabus-ee202",
+    "file": "docs/syllabus-ee202.pdf",
+    "originalName": "84900000312017280.pdf",
+    "uploaded": "2026-03-21"
+  },
+  "ee202lab4preliminarypdf": {
+    "name": "ee202lab4preliminarypdf",
+    "file": "docs/ee202lab4preliminarypdf.pdf",
+    "originalName": "ee202lab4preliminary.pdf",
+    "uploaded": "2026-04-16"
+  },
+  "ee204hw3": {
+    "name": "ee204hw3",
+    "file": "docs/ee204hw3.pdf",
+    "originalName": "ee204hw3.pdf",
+    "uploaded": "2026-04-20"
+  },
+  "ee204candidatessolvedpdf": {
+    "name": "ee204candidatessolvedpdf",
+    "file": "docs/ee204candidatessolvedpdf.pdf",
+    "originalName": "ee204_candidates_solved.pdf",
+    "uploaded": "2026-04-21"
+  },
+  "ee204candidates": {
+    "name": "ee204candidates",
+    "file": "docs/ee204candidates.pdf",
+    "originalName": "ee204_candidates.pdf",
+    "uploaded": "2026-04-21"
+  },
+  "ee204supplement": {
+    "name": "ee204supplement",
+    "file": "docs/ee204supplement.pdf",
+    "originalName": "ee204_supplement.pdf",
+    "uploaded": "2026-04-21"
+  }
+}

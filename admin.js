@@ -853,3 +853,26 @@ async function confirmMoodleImport() {
 })();
 
 loadData();
+
+// ── Manual PDF Upload ──────────────────────────────────────────
+async function handleManualUpload(input) {
+  const file = input.files[0];
+  if (!file) return;
+
+  showToast('Uploading...');
+  const fd = new FormData();
+  fd.append('pdf', file); // API expects 'pdf' field name for /api/upload
+
+  try {
+    const res = await fetch('/api/upload', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Upload failed');
+    
+    showToast('Uploaded successfully!');
+    await loadPdfs(); // Refresh the list
+  } catch (e) {
+    showToast('Upload failed: ' + e.message, true);
+  } finally {
+    input.value = ''; // Reset input
+  }
+}

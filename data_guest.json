@@ -1,0 +1,22 @@
+{
+  "title": "Guest Dashboard",
+  "sections": [
+    {
+      "title": "MATH112 Dosyalari",
+      "type": "documents",
+      "collapsed": false,
+      "items": [
+        {
+          "title": "Sorular (7th ed.)",
+          "file": "docs/rosen_discrete_mathematics_and_its_applications_7t_202604271752.pdf",
+          "tag": ""
+        },
+        {
+          "title": "Tüm kitap",
+          "file": "docs/_Book__Discrete_mathematics_and_its_applications__2019__0.pdf",
+          "tag": ""
+        }
+      ]
+    }
+  ]
+}

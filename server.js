@@ -6,16 +6,76 @@ const os           = require('os');
 const crypto       = require('crypto');
 const { execFile } = require('child_process');
 const AdmZip       = require('adm-zip');
+const session      = require('express-session');
+const cookieParser = require('cookie-parser');
 
 const app       = express();
 const PORT      = process.env.PORT || 3000;
-const DATA_FILE     = path.join(__dirname, 'data.json');
-const DOCS_DIR      = path.join(__dirname, 'docs');
-const REGISTRY_FILE = path.join(__dirname, 'docs-registry.json');
 
-if (!fs.existsSync(DOCS_DIR)) fs.mkdirSync(DOCS_DIR);
+// -- Session setup --
+app.use(cookieParser());
+app.use(session({
+  secret: 'REDACTED',
+  resave: false,
+  saveUninitialized: false,
+  cookie: { maxAge: 24 * 60 * 60 * 1000 } // 24 hours
+}));
 
-// Cross-device safe move (rename fails across filesystems like /tmp → /home)
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// -- Auth Middleware --
+const publicPaths = ['/login.html', '/auth/login'];
+app.use((req, res, next) => {
+  if (publicPaths.includes(req.path)) return next();
+  if (req.session && req.session.user) return next();
+  res.redirect('/login.html');
+});
+
+// -- Path Helper --
+function getPaths(req) {
+  const isGuest = req.session && req.session.mode === 'guest';
+  
+  const docsDir = path.join(__dirname, isGuest ? 'docs_guest' : 'docs');
+  if (!fs.existsSync(docsDir)) fs.mkdirSync(docsDir, { recursive: true });
+
+  const dataFile = path.join(__dirname, isGuest ? 'data_guest.json' : 'data.json');
+  if (!fs.existsSync(dataFile)) {
+    // Initialize guest data if it doesn't exist
+    const defaultData = { title: 'Guest Dashboard', sections: [] };
+    fs.writeFileSync(dataFile, JSON.stringify(defaultData, null, 2));
+  }
+
+  const registryFile = path.join(__dirname, isGuest ? 'docs-registry_guest.json' : 'docs-registry.json');
+  if (!fs.existsSync(registryFile)) {
+    fs.writeFileSync(registryFile, JSON.stringify({}, null, 2));
+  }
+
+  return {
+    DATA_FILE: dataFile,
+    DOCS_DIR: docsDir,
+    REGISTRY_FILE: registryFile
+  };
+}
+
+// Inject paths into req
+app.use((req, res, next) => {
+  if (req.session && req.session.user) {
+    req.paths = getPaths(req);
+  }
+  next();
+});
+
+// -- Registry helpers --
+function loadRegistry(paths) {
+  try { return JSON.parse(fs.readFileSync(paths.REGISTRY_FILE, 'utf8')); }
+  catch { return {}; }
+}
+function saveRegistry(reg, paths) {
+  fs.writeFileSync(paths.REGISTRY_FILE, JSON.stringify(reg, null, 2));
+}
+
+// Cross-device safe move
 function moveFile(src, dest) {
   try {
     fs.renameSync(src, dest);
@@ -27,20 +87,9 @@ function moveFile(src, dest) {
   }
 }
 
-// ── Docs registry (friendly name → file path) ─────────────────
-function loadRegistry() {
-  try { return JSON.parse(fs.readFileSync(REGISTRY_FILE, 'utf8')); }
-  catch { return {}; }
-}
-function saveRegistry(reg) {
-  fs.writeFileSync(REGISTRY_FILE, JSON.stringify(reg, null, 2));
-}
-
 // ── Ollama auto-naming ────────────────────────────────────────
 const OLLAMA_HOST  = process.env.OLLAMA_HOST  || 'http://localhost:11434';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen2.5:3b';
-
-// Keep GEMINI_KEY so the env var still works as a fallback if set
 const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
 
 const NAMING_PROMPT =
@@ -57,7 +106,6 @@ const NAMING_PROMPT =
 
 function extractPdfText(filePath) {
   return new Promise(resolve => {
-    // -f 1 -l 3: first 3 pages only; - : output to stdout
     execFile('pdftotext', ['-f', '1', '-l', '3', filePath, '-'], (err, stdout) => {
       if (err || !stdout) return resolve(null);
       resolve(stdout.slice(0, 100).trim() || null);
@@ -68,12 +116,7 @@ function extractPdfText(filePath) {
 async function ollamaNamePdf(filePath) {
   try {
     const text = await extractPdfText(filePath);
-    if (!text || text.length < 10) {
-      console.log('Ollama: no text extracted from PDF, skipping');
-      return null;
-    }
-    console.log(`Ollama: sending ${text.length} chars to ${OLLAMA_MODEL}`);
-
+    if (!text || text.length < 10) return null;
     const res = await fetch(`${OLLAMA_HOST}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -84,24 +127,36 @@ async function ollamaNamePdf(filePath) {
         options: { num_predict: 30, temperature: 0.1 }
       })
     });
-
-    if (!res.ok) {
-      console.warn('Ollama error:', res.status, await res.text());
-      return { error: 'api' };
-    }
+    if (!res.ok) return { error: 'api' };
     const json = await res.json();
     const raw = json.response?.trim() || '';
-    console.log('Ollama raw suggestion:', raw);
     const clean = raw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     return clean.length >= 3 ? clean : null;
-  } catch (e) {
-    console.warn('Ollama naming failed:', e.message);
-    return { error: 'network' };
-  }
+  } catch (e) { return { error: 'network' }; }
+}
+
+async function geminiNamePdf(filePath) {
+  if (!GEMINI_KEY) return null;
+  try {
+    const text = await extractPdfText(filePath);
+    if (!text || text.length < 10) return null;
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${GEMINI_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: NAMING_PROMPT + '\n\nDocument text:\n' + text }] }],
+          generationConfig: { maxOutputTokens: 30, temperature: 0.1 }
+        })
+    });
+    const json = await res.json();
+    if (!res.ok) return { error: 'api' };
+    const raw = json.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+    const clean = raw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    return clean.length >= 3 ? clean : null;
+  } catch (e) { return { error: 'network' }; }
 }
 
 async function autoNamePdf(filePath) {
-  // Prefer local Ollama; fall back to Gemini if key is set
   try {
     const ping = await fetch(`${OLLAMA_HOST}/api/tags`, { signal: AbortSignal.timeout(2000) });
     if (ping.ok) return ollamaNamePdf(filePath);
@@ -110,75 +165,16 @@ async function autoNamePdf(filePath) {
   return null;
 }
 
-async function geminiNamePdf(filePath) {
-  if (!GEMINI_KEY) return null;
-
-  try {
-    const text = await extractPdfText(filePath);
-    if (!text || text.length < 10) {
-      console.log('Gemini: no text extracted from PDF, skipping');
-      return null;
-    }
-    console.log(`Gemini: sending ${text.length} chars of extracted text`);
-
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${GEMINI_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: NAMING_PROMPT + '\n\nDocument text:\n' + text }] }],
-          generationConfig: { maxOutputTokens: 30, temperature: 0.1 }
-        })
-      }
-    );
-    const json = await res.json();
-    if (!res.ok) {
-      const code = json?.error?.code;
-      console.warn('Gemini API error:', JSON.stringify(json).slice(0, 200));
-      if (code === 429) return { error: 'quota' };
-      if (code === 401 || code === 403) return { error: 'auth' };
-      return { error: 'api' };
-    }
-    const raw = json.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
-    console.log('Gemini raw suggestion:', raw);
-    const clean = raw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-    return clean.length >= 3 ? clean : null;
-  } catch (e) {
-    console.warn('Gemini naming failed:', e.message);
-    return { error: 'network' };
-  }
-}
-
-// ── Upload staging (temp store before naming) ─────────────────
-const _staged = {};   // id -> { tempPath, originalName, suggested? }
-
-// Auto-expire staged entries after 15 minutes
-setInterval(() => {
-  const cutoff = Date.now() - 15 * 60 * 1000;
-  for (const [id, s] of Object.entries(_staged)) {
-    if (s.stagedAt < cutoff) {
-      try { fs.unlinkSync(s.tempPath); } catch {}
-      delete _staged[id];
-    }
-  }
-}, 60 * 1000);
-
 // ── Course catalog ────────────────────────────────────────────
-let COURSE_CATALOG = {}; // code -> { code, title, credits, faculty, ... }
-
+let COURSE_CATALOG = {};
 function unescapeXml(str) {
-  return str
-    .replace(/&amp;/g,  '&')
-    .replace(/&lt;/g,   '<')
-    .replace(/&gt;/g,   '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'");
+  return str.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'");
 }
-
 function loadCourseCatalog() {
   try {
-    const xml = fs.readFileSync(path.join(__dirname, 'coursecatalog.xml'), 'utf8');
+    const xmlPath = path.join(__dirname, 'coursecatalog.xml');
+    if (!fs.existsSync(xmlPath)) return;
+    const xml = fs.readFileSync(xmlPath, 'utf8');
     const rows = {};
     const cellRe = /<gnm:Cell Row="(\d+)" Col="(\d+)"[^>]*>([^]*?)<\/gnm:Cell>/g;
     let m;
@@ -187,29 +183,25 @@ function loadCourseCatalog() {
       if (!rows[r]) rows[r] = {};
       rows[r][c] = unescapeXml(m[3]);
     }
-    // Row 0: COURSECODE, TITLE, CREDITS, FACULTY, COREQUISITE, PREREQUISITE, DESCRIPTION
     for (const [ri, row] of Object.entries(rows)) {
       if (parseInt(ri) === 0 || !row[0]) continue;
       COURSE_CATALOG[row[0]] = {
-        code:         row[0] || '',
-        title:        row[1] || '',
-        credits:      row[2] ? row[2].replace(/\.00$/, '') : '',
-        faculty:      row[3] || '',
-        corequisite:  row[4] || '',
+        code: row[0] || '',
+        title: row[1] || '',
+        credits: row[2] ? row[2].replace(/\.00$/, '') : '',
+        faculty: row[3] || '',
+        corequisite: row[4] || '',
         prerequisite: row[5] || '',
-        description:  row[6] || '',
+        description: row[6] || '',
       };
     }
-    console.log(`Loaded ${Object.keys(COURSE_CATALOG).length} courses from catalog`);
-  } catch (e) {
-    console.warn('Could not load course catalog:', e.message);
-  }
+  } catch (e) { console.warn('Could not load course catalog:', e.message); }
 }
 loadCourseCatalog();
 
-// ── Multer: docs (PDF only) ───────────────────────────────────
+// ── Multer setups ─────────────────────────────────────────────
 const docsStorage = multer.diskStorage({
-  destination: DOCS_DIR,
+  destination: (req, file, cb) => cb(null, req.paths.DOCS_DIR),
   filename: (req, file, cb) => {
     const safe = file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_');
     cb(null, safe);
@@ -217,14 +209,10 @@ const docsStorage = multer.diskStorage({
 });
 const uploadDocs = multer({
   storage: docsStorage,
-  fileFilter: (req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
-    cb(null, ['.pdf'].includes(ext));
-  },
+  fileFilter: (req, file, cb) => cb(null, path.extname(file.originalname).toLowerCase() === '.pdf'),
   limits: { fileSize: 50 * 1024 * 1024 }
 });
 
-// ── Multer: syllabus (PDF + doc/docx) ────────────────────────
 const tmpStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, os.tmpdir()),
   filename: (req, file, cb) => {
@@ -232,16 +220,8 @@ const tmpStorage = multer.diskStorage({
     cb(null, `syl_${Date.now()}_${safe}`);
   }
 });
-const uploadSyllabus = multer({
-  storage: tmpStorage,
-  fileFilter: (req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
-    cb(null, ['.pdf', '.doc', '.docx'].includes(ext));
-  },
-  limits: { fileSize: 50 * 1024 * 1024 }
-});
+const uploadSyllabus = multer({ storage: tmpStorage, limits: { fileSize: 50 * 1024 * 1024 } });
 
-// ── Multer: conversion (any file) ────────────────────────────
 const convStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, os.tmpdir()),
   filename: (req, file, cb) => {
@@ -249,39 +229,14 @@ const convStorage = multer.diskStorage({
     cb(null, `conv_${Date.now()}_${crypto.randomBytes(4).toString('hex')}_${safe}`);
   }
 });
-const uploadConv = multer({
-  storage: convStorage,
-  limits: { fileSize: 500 * 1024 * 1024 } // 500 MB for video
-});
+const uploadConv = multer({ storage: convStorage, limits: { fileSize: 500 * 1024 * 1024 } });
 
 // ── Conversion helpers ────────────────────────────────────────
 const SUPPORTED_CONVERSIONS = {
-  // Video
-  mp4:  ['mkv', 'webm', 'avi', 'mov'],
-  mkv:  ['mp4', 'webm', 'avi'],
-  webm: ['mp4', 'mkv'],
-  avi:  ['mp4', 'mkv', 'webm'],
-  mov:  ['mp4', 'mkv', 'webm'],
-  wmv:  ['mp4', 'mkv'],
-  flv:  ['mp4', 'mkv'],
-  ts:   ['mp4', 'mkv'],
-  m4v:  ['mp4', 'mkv'],
-  // Audio
-  mp3:  ['wav', 'ogg', 'm4a', 'flac'],
-  wav:  ['mp3', 'ogg', 'm4a', 'flac'],
-  ogg:  ['mp3', 'wav', 'flac'],
-  m4a:  ['mp3', 'wav', 'ogg'],
-  flac: ['mp3', 'wav', 'ogg'],
-  aac:  ['mp3', 'wav', 'm4a'],
-  // Documents
-  doc:  ['pdf'],
-  docx: ['pdf'],
-  pdf:  ['docx'],
-  xls:  ['csv', 'xlsx'],
-  xlsx: ['csv', 'xls'],
-  csv:  ['xlsx', 'xls'],
+  mp4: ['mkv', 'webm', 'avi', 'mov'], mkv: ['mp4', 'webm', 'avi'], webm: ['mp4', 'mkv'], avi: ['mp4', 'mkv', 'webm'], mov: ['mp4', 'mkv', 'webm'], wmv: ['mp4', 'mkv'], flv: ['mp4', 'mkv'], ts: ['mp4', 'mkv'], m4v: ['mp4', 'mkv'],
+  mp3: ['wav', 'ogg', 'm4a', 'flac'], wav: ['mp3', 'ogg', 'm4a', 'flac'], ogg: ['mp3', 'wav', 'flac'], m4a: ['mp3', 'wav', 'ogg'], flac: ['mp3', 'wav', 'ogg'], aac: ['mp3', 'wav', 'm4a'],
+  doc: ['pdf'], docx: ['pdf'], pdf: ['docx'], xls: ['csv', 'xlsx'], xlsx: ['csv', 'xls'], csv: ['xlsx', 'xls'],
 };
-
 const VIDEO_EXTS = new Set(['mp4', 'mkv', 'webm', 'avi', 'mov', 'wmv', 'flv', 'ts', 'm4v']);
 const AUDIO_EXTS = new Set(['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac']);
 
@@ -290,63 +245,58 @@ function convertFile(inputPath, targetExt, outDir) {
     const srcExt = path.extname(inputPath).slice(1).toLowerCase();
     const baseName = path.basename(inputPath, path.extname(inputPath));
     const outputPath = path.join(outDir, `${baseName}.${targetExt}`);
-
     if (VIDEO_EXTS.has(srcExt) || AUDIO_EXTS.has(srcExt)) {
-      // For audio: always re-encode (containers differ too much for copy)
-      // For video: try stream copy first; webm always needs re-encode
       const needsEncode = AUDIO_EXTS.has(srcExt) || targetExt === 'webm' || srcExt === 'webm';
-      const args = needsEncode
-        ? ['-i', inputPath, '-y', outputPath]
-        : ['-i', inputPath, '-c', 'copy', '-y', outputPath];
-      execFile('ffmpeg', args, { timeout: 600000 },
-        (err) => err ? reject(err) : resolve(outputPath));
+      const args = needsEncode ? ['-i', inputPath, '-y', outputPath] : ['-i', inputPath, '-c', 'copy', '-y', outputPath];
+      execFile('ffmpeg', args, { timeout: 600000 }, (err) => err ? reject(err) : resolve(outputPath));
     } else {
-      // LibreOffice: handles doc/docx/pdf/xls/xlsx/csv
-      execFile('soffice', ['--headless', '--convert-to', targetExt, '--outdir', outDir, inputPath],
-        { timeout: 120000 },
-        (err) => {
-          if (err) return reject(err);
-          // soffice always outputs to outDir with the target extension
-          resolve(outputPath);
-        });
+      execFile('soffice', ['--headless', '--convert-to', targetExt, '--outdir', outDir, inputPath], { timeout: 120000 }, (err) => err ? reject(err) : resolve(outputPath));
     }
   });
 }
 
-app.use(express.json());
-
-// ── API: dashboard data ───────────────────────────────────────
-app.get('/api/data', (req, res) => {
-  try {
-    res.json(JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')));
-  } catch {
-    res.status(500).json({ error: 'Could not read data file' });
+// ── Auth Routes ───────────────────────────────────────────────
+app.post('/auth/login', (req, res) => {
+  const { username, password, guest } = req.body;
+  if (guest) {
+    req.session.user = 'guest';
+    req.session.mode = 'guest';
+    return res.json({ ok: true });
   }
+  if (username === 'admin' && password === 'REDACTED') {
+    req.session.user = 'admin';
+    req.session.mode = 'admin';
+    return res.json({ ok: true });
+  }
+  res.status(401).json({ error: 'Invalid credentials' });
+});
+
+app.get('/auth/logout', (req, res) => {
+  req.session.destroy();
+  res.redirect('/login.html');
+});
+
+// ── API Routes ────────────────────────────────────────────────
+app.get('/api/data', (req, res) => {
+  try { res.json(JSON.parse(fs.readFileSync(req.paths.DATA_FILE, 'utf8'))); }
+  catch { res.status(500).json({ error: 'Could not read data file' }); }
 });
 
 app.put('/api/data', (req, res) => {
-  try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(req.body, null, 2));
-    res.json({ ok: true });
-  } catch {
-    res.status(500).json({ error: 'Could not write data file' });
-  }
+  try { fs.writeFileSync(req.paths.DATA_FILE, JSON.stringify(req.body, null, 2)); res.json({ ok: true }); }
+  catch { res.status(500).json({ error: 'Could not write data file' }); }
 });
 
-// ── API: course catalog ───────────────────────────────────────
 app.get('/api/courses', (req, res) => {
-  const q     = (req.query.q || '').toLowerCase().trim();
+  const q = (req.query.q || '').toLowerCase().trim();
   const limit = Math.min(parseInt(req.query.limit) || 10, 50);
   if (!q) return res.json([]);
-
   const qNorm = q.replace(/\s+/g, '');
   const results = Object.values(COURSE_CATALOG).filter(c => {
-    const codeLow  = c.code.toLowerCase();
+    const codeLow = c.code.toLowerCase();
     const codeNorm = codeLow.replace(/\s+/g, '');
-    return codeLow.includes(q) || c.title.toLowerCase().includes(q) ||
-           (qNorm.length >= 2 && codeNorm.includes(qNorm));
+    return codeLow.includes(q) || c.title.toLowerCase().includes(q) || (qNorm.length >= 2 && codeNorm.includes(qNorm));
   }).slice(0, limit);
-
   res.json(results);
 });
 
@@ -356,41 +306,32 @@ app.get('/api/courses/:code', (req, res) => {
   res.json(course);
 });
 
-// ── API: PDF document management ─────────────────────────────
 app.get('/api/docs', (req, res) => {
-  const files = fs.readdirSync(DOCS_DIR)
-    .filter(f => f.toLowerCase().endsWith('.pdf'))
-    .map(f => ({ name: f, path: `docs/${f}` }));
+  const files = fs.readdirSync(req.paths.DOCS_DIR).filter(f => f.toLowerCase().endsWith('.pdf')).map(f => ({ name: f, path: `docs/${f}` }));
   res.json(files);
 });
 
 app.post('/api/upload', uploadDocs.array('pdf', 20), (req, res) => {
-  if (!req.files || !req.files.length)
-    return res.status(400).json({ error: 'No valid PDF files received' });
+  if (!req.files || !req.files.length) return res.status(400).json({ error: 'No valid PDF files received' });
   res.json(req.files.map(f => ({ name: f.filename, path: `docs/${f.filename}` })));
 });
 
 app.delete('/api/docs/:filename', (req, res) => {
   const filename = path.basename(req.params.filename);
-  const file = path.join(DOCS_DIR, filename);
+  const file = path.join(req.paths.DOCS_DIR, filename);
   if (fs.existsSync(file)) fs.unlinkSync(file);
-  // Remove from registry too
-  const reg = loadRegistry();
+  const reg = loadRegistry(req.paths);
   const key = Object.keys(reg).find(k => reg[k].file === `docs/${filename}`);
-  if (key) { delete reg[key]; saveRegistry(reg); }
+  if (key) { delete reg[key]; saveRegistry(reg, req.paths); }
   res.json({ ok: true });
 });
 
-// ── API: docs registry ────────────────────────────────────────
-app.get('/api/docs/registry', (req, res) => res.json(loadRegistry()));
+app.get('/api/docs/registry', (req, res) => res.json(loadRegistry(req.paths)));
 
-// ── API: staged upload (phase 1 — upload & Gemini analyze) ───
+const _staged = {};
 app.get('/api/upload/stage-info', async (req, res) => {
   let ollama = false;
-  try {
-    const r = await fetch(`${OLLAMA_HOST}/api/tags`, { signal: AbortSignal.timeout(2000) });
-    ollama = r.ok;
-  } catch {}
+  try { const r = await fetch(`${OLLAMA_HOST}/api/tags`, { signal: AbortSignal.timeout(2000) }); ollama = r.ok; } catch {}
   res.json({ ollama, gemini: !!GEMINI_KEY });
 });
 
@@ -399,15 +340,10 @@ app.post('/api/upload/stage', uploadSyllabus.single('file'), async (req, res) =>
   const id = crypto.randomBytes(8).toString('hex');
   _staged[id] = { tempPath: req.file.path, originalName: req.file.originalname, stagedAt: Date.now() };
   res.json({ id, originalName: req.file.originalname });
-  // Kick off auto-naming in background (Ollama → Gemini fallback)
   autoNamePdf(req.file.path).then(result => {
     if (!_staged[id]) return;
-    if (result && typeof result === 'object') {
-      _staged[id].suggested = '';
-      _staged[id].geminiError = result.error;
-    } else {
-      _staged[id].suggested = result ?? '';
-    }
+    if (result && typeof result === 'object') { _staged[id].suggested = ''; _staged[id].geminiError = result.error; }
+    else { _staged[id].suggested = result ?? ''; }
   });
 });
 
@@ -417,31 +353,25 @@ app.get('/api/upload/stage/:id', (req, res) => {
   res.json({ originalName: s.originalName, suggested: s.suggested ?? null, geminiError: s.geminiError ?? null, ready: 'suggested' in s });
 });
 
-// ── API: staged upload (phase 2 — confirm name & save) ────────
 app.post('/api/upload/confirm', async (req, res) => {
   const { id, name } = req.body || {};
   if (!id || !name) return res.status(400).json({ error: 'id and name required' });
   const s = _staged[id];
   if (!s) return res.status(404).json({ error: 'Staging entry not found or expired' });
-
   const safeName = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   if (!safeName) return res.status(400).json({ error: 'Invalid name' });
-
-  const ext = path.extname(s.originalName).toLowerCase();
   try {
-    let finalPath;
-    if (ext === '.pdf') {
-      finalPath = path.join(DOCS_DIR, `${safeName}.pdf`);
+    let finalPath = path.join(req.paths.DOCS_DIR, `${safeName}.pdf`);
+    if (path.extname(s.originalName).toLowerCase() === '.pdf') {
       moveFile(s.tempPath, finalPath);
     } else {
-      const converted = await convertFile(s.tempPath, 'pdf', DOCS_DIR);
-      finalPath = path.join(DOCS_DIR, `${safeName}.pdf`);
+      const converted = await convertFile(s.tempPath, 'pdf', req.paths.DOCS_DIR);
       moveFile(converted, finalPath);
       try { fs.unlinkSync(s.tempPath); } catch {}
     }
-    const reg = loadRegistry();
+    const reg = loadRegistry(req.paths);
     reg[safeName] = { name: safeName, file: `docs/${safeName}.pdf`, originalName: s.originalName, uploaded: new Date().toISOString().split('T')[0] };
-    saveRegistry(reg);
+    saveRegistry(reg, req.paths);
     delete _staged[id];
     res.json({ name: safeName, file: `docs/${safeName}.pdf` });
   } catch (e) {
@@ -451,150 +381,37 @@ app.post('/api/upload/confirm', async (req, res) => {
   }
 });
 
-// ── API: syllabus upload (auto-converts doc/docx → PDF) ──────
-app.post('/api/upload/syllabus', uploadSyllabus.single('file'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file received' });
-
-  const tmpPath = req.file.path;
-  const ext = path.extname(req.file.originalname).toLowerCase();
-
-  try {
-    let finalPath;
-    if (ext === '.pdf') {
-      // Already PDF — just move to docs/
-      const destName = path.basename(tmpPath).replace(/^syl_\d+_/, '');
-      const dest = path.join(DOCS_DIR, destName);
-      moveFile(tmpPath, dest);
-      finalPath = dest;
-    } else {
-      // doc/docx → convert to PDF via LibreOffice
-      const pdfPath = await convertFile(tmpPath, 'pdf', DOCS_DIR);
-      fs.unlinkSync(tmpPath);
-      finalPath = pdfPath;
-    }
-    const name = path.basename(finalPath);
-    res.json({ name, path: `docs/${name}` });
-  } catch (e) {
-    try { fs.unlinkSync(tmpPath); } catch {}
-    res.status(500).json({ error: `Conversion failed: ${e.message}` });
-  }
-});
-
-// ── API: file conversion ──────────────────────────────────────
-app.get('/api/conversion/formats', (req, res) => {
-  res.json(SUPPORTED_CONVERSIONS);
-});
-
 app.post('/api/conversion/convert', uploadConv.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-
   const { targetFormat } = req.body;
   if (!targetFormat) return res.status(400).json({ error: 'targetFormat is required' });
-
   const srcExt = path.extname(req.file.originalname).slice(1).toLowerCase();
   const allowed = SUPPORTED_CONVERSIONS[srcExt];
-  if (!allowed || !allowed.includes(targetFormat.toLowerCase())) {
-    return res.status(400).json({ error: `Cannot convert .${srcExt} to .${targetFormat}` });
-  }
-
-  const tmpPath  = req.file.path;
-  const outDir   = os.tmpdir();
-
+  if (!allowed || !allowed.includes(targetFormat.toLowerCase())) return res.status(400).json({ error: `Cannot convert .${srcExt} to .${targetFormat}` });
+  const tmpPath = req.file.path; const outDir = os.tmpdir();
   try {
     const outputPath = await convertFile(tmpPath, targetFormat.toLowerCase(), outDir);
     const outName = path.basename(outputPath);
-
     res.setHeader('Content-Disposition', `attachment; filename="${outName}"`);
     res.setHeader('Content-Type', 'application/octet-stream');
-
     const stream = fs.createReadStream(outputPath);
     stream.pipe(res);
-    stream.on('end', () => {
-      try { fs.unlinkSync(tmpPath);    } catch {}
-      try { fs.unlinkSync(outputPath); } catch {}
-    });
-    stream.on('error', () => {
-      try { fs.unlinkSync(tmpPath);    } catch {}
-      try { fs.unlinkSync(outputPath); } catch {}
-    });
-  } catch (e) {
-    try { fs.unlinkSync(tmpPath); } catch {}
-    res.status(500).json({ error: `Conversion failed: ${e.message}` });
-  }
+    stream.on('end', () => { try { fs.unlinkSync(tmpPath); fs.unlinkSync(outputPath); } catch {} });
+    stream.on('error', () => { try { fs.unlinkSync(tmpPath); fs.unlinkSync(outputPath); } catch {} });
+  } catch (e) { try { fs.unlinkSync(tmpPath); } catch {} res.status(500).json({ error: `Conversion failed: ${e.message}` }); }
 });
 
-// ── API: Moodle ZIP import ────────────────────────────────────
-const moodleZipStorage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, os.tmpdir()),
-  filename:    (req, file, cb) => {
-    const safe = file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-    cb(null, `moodle_${Date.now()}_${safe}`);
-  }
-});
-const uploadMoodleZip = multer({
-  storage: moodleZipStorage,
-  fileFilter: (req, file, cb) => cb(null, path.extname(file.originalname).toLowerCase() === '.zip'),
-  limits: { fileSize: 500 * 1024 * 1024 }
+app.get('/docs/:filename', (req, res) => {
+  const filePath = path.join(req.paths.DOCS_DIR, req.params.filename);
+  if (fs.existsSync(filePath)) res.sendFile(filePath);
+  else res.status(404).send('Not found');
 });
 
-app.post('/api/upload/moodle-zip', uploadMoodleZip.single('zip'), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No ZIP file received' });
-
-  const zipPath    = req.file.path;
-  const zipBaseName = path.basename(req.file.originalname, '.zip');
-
-  try {
-    const zip     = new AdmZip(zipPath);
-    const entries = zip.getEntries();
-    const weeks   = {}; // folderName -> [{originalName, savedAs, path}]
-
-    for (const entry of entries) {
-      if (entry.isDirectory) continue;
-
-      const entryName = entry.entryName.replace(/\\/g, '/');
-      const parts     = entryName.split('/').filter(Boolean);
-      if (parts.length < 2) continue; // skip root-level files (index.html, etc.)
-
-      const weekFolder = parts[0];
-      const fileName   = parts[parts.length - 1];
-      const ext        = path.extname(fileName).toLowerCase();
-
-      if (ext !== '.pdf') continue;
-      if (fileName.startsWith('!_')) continue; // skip error logs
-
-      const safeWeek = weekFolder.replace(/[^a-zA-Z0-9\-_ ]/g, '').trim()
-                                 .replace(/\s+/g, '_').slice(0, 60);
-      const safeFile = fileName.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-      const destName = `${safeWeek}__${safeFile}`;
-      const destPath = path.join(DOCS_DIR, destName);
-
-      fs.writeFileSync(destPath, entry.getData());
-
-      if (!weeks[weekFolder]) weeks[weekFolder] = [];
-      weeks[weekFolder].push({ originalName: fileName, savedAs: destName, path: `docs/${destName}` });
-    }
-
-    try { fs.unlinkSync(zipPath); } catch {}
-
-    const weekList   = Object.entries(weeks).map(([name, files]) => ({ name, files }));
-    const totalFiles = weekList.reduce((s, w) => s + w.files.length, 0);
-    res.json({ zipName: zipBaseName, weeks: weekList, totalFiles });
-
-  } catch (e) {
-    try { fs.unlinkSync(zipPath); } catch {}
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ── Pages ─────────────────────────────────────────────────────
-app.get('/edit',       (req, res) => res.sendFile(path.join(__dirname, 'admin.html')));
+app.get('/edit', (req, res) => res.sendFile(path.join(__dirname, 'admin.html')));
 app.get('/conversion', (req, res) => res.sendFile(path.join(__dirname, 'conversion.html')));
 
-// ── Static files ─────────────────────────────────────────────
 app.use(express.static(__dirname));
 
 app.listen(PORT, () => {
   console.log(`Dashboard:  http://localhost:${PORT}`);
-  console.log(`Admin:      http://localhost:${PORT}/edit`);
-  console.log(`Conversion: http://localhost:${PORT}/conversion`);
 });
