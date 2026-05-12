@@ -143,4 +143,8 @@ vite.config.ts.timestamp-*
 extension.js
 
 docs/
-docs_guest/
+# Data files
+data.json
+data_guest.json
+docs-registry.json
+docs-registry_guest.json
