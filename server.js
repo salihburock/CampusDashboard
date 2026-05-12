@@ -232,25 +232,115 @@ const convStorage = multer.diskStorage({
 const uploadConv = multer({ storage: convStorage, limits: { fileSize: 500 * 1024 * 1024 } });
 
 // ── Conversion helpers ────────────────────────────────────────
+// 50 source formats: 24 ffmpeg (video+audio), 10 imagemagick (image),
+// 16 soffice (document/spreadsheet/presentation).
 const SUPPORTED_CONVERSIONS = {
-  mp4: ['mkv', 'webm', 'avi', 'mov'], mkv: ['mp4', 'webm', 'avi'], webm: ['mp4', 'mkv'], avi: ['mp4', 'mkv', 'webm'], mov: ['mp4', 'mkv', 'webm'], wmv: ['mp4', 'mkv'], flv: ['mp4', 'mkv'], ts: ['mp4', 'mkv'], m4v: ['mp4', 'mkv'],
-  mp3: ['wav', 'ogg', 'm4a', 'flac'], wav: ['mp3', 'ogg', 'm4a', 'flac'], ogg: ['mp3', 'wav', 'flac'], m4a: ['mp3', 'wav', 'ogg'], flac: ['mp3', 'wav', 'ogg'], aac: ['mp3', 'wav', 'm4a'],
-  doc: ['pdf'], docx: ['pdf'], pdf: ['docx'], xls: ['csv', 'xlsx'], xlsx: ['csv', 'xls'], csv: ['xlsx', 'xls'],
+  // ── Video (ffmpeg) ─────────────────────────────────────────
+  mp4:  ['mkv', 'webm', 'avi', 'mov', 'gif', 'mp3'],
+  mkv:  ['mp4', 'webm', 'avi', 'mov', 'mp3'],
+  webm: ['mp4', 'mkv', 'gif', 'mp3'],
+  avi:  ['mp4', 'mkv', 'webm', 'mov', 'mp3'],
+  mov:  ['mp4', 'mkv', 'webm', 'gif', 'mp3'],
+  wmv:  ['mp4', 'mkv', 'webm', 'mp3'],
+  flv:  ['mp4', 'mkv', 'webm', 'mp3'],
+  ts:   ['mp4', 'mkv', 'mp3'],
+  m4v:  ['mp4', 'mkv', 'mp3'],
+  mpg:  ['mp4', 'mkv', 'mp3'],
+  mpeg: ['mp4', 'mkv', 'mp3'],
+  '3gp': ['mp4', 'mkv', 'mp3'],
+  ogv:  ['mp4', 'mkv', 'webm', 'mp3'],
+  vob:  ['mp4', 'mkv', 'mp3'],
+
+  // ── Audio (ffmpeg) ─────────────────────────────────────────
+  mp3:  ['wav', 'ogg', 'm4a', 'flac', 'aac', 'opus'],
+  wav:  ['mp3', 'ogg', 'm4a', 'flac', 'aac'],
+  ogg:  ['mp3', 'wav', 'flac', 'opus'],
+  m4a:  ['mp3', 'wav', 'ogg', 'flac'],
+  flac: ['mp3', 'wav', 'ogg', 'm4a'],
+  aac:  ['mp3', 'wav', 'm4a'],
+  wma:  ['mp3', 'wav', 'm4a'],
+  opus: ['mp3', 'wav', 'ogg'],
+  aiff: ['mp3', 'wav', 'flac'],
+  amr:  ['mp3', 'wav'],
+
+  // ── Image (imagemagick) ────────────────────────────────────
+  jpg:  ['png', 'webp', 'gif', 'bmp', 'tiff', 'ico', 'pdf'],
+  jpeg: ['png', 'webp', 'gif', 'bmp', 'tiff', 'ico', 'pdf'],
+  png:  ['jpg', 'webp', 'gif', 'bmp', 'tiff', 'ico', 'pdf'],
+  gif:  ['png', 'jpg', 'webp', 'mp4'],
+  bmp:  ['jpg', 'png', 'webp', 'gif'],
+  webp: ['jpg', 'png', 'gif', 'bmp'],
+  tiff: ['jpg', 'png', 'webp', 'pdf'],
+  tif:  ['jpg', 'png', 'webp', 'pdf'],
+  ico:  ['png', 'jpg'],
+  svg:  ['png', 'jpg', 'webp', 'pdf'],
+
+  // ── Document / spreadsheet / presentation (soffice) ───────
+  doc:  ['pdf', 'docx', 'odt', 'rtf', 'txt', 'html', 'epub'],
+  docx: ['pdf', 'doc', 'odt', 'rtf', 'txt', 'html', 'epub'],
+  odt:  ['pdf', 'docx', 'doc', 'rtf', 'txt', 'html'],
+  rtf:  ['pdf', 'docx', 'odt', 'txt'],
+  txt:  ['pdf', 'docx', 'odt', 'html'],
+  pdf:  ['docx', 'txt', 'html'],
+  html: ['pdf', 'docx', 'odt', 'txt'],
+  epub: ['pdf', 'html', 'txt'],
+  ppt:  ['pdf', 'pptx', 'odp'],
+  pptx: ['pdf', 'ppt', 'odp'],
+  odp:  ['pdf', 'pptx', 'ppt'],
+  xls:  ['pdf', 'csv', 'xlsx', 'ods'],
+  xlsx: ['pdf', 'csv', 'xls', 'ods', 'tsv'],
+  ods:  ['pdf', 'xlsx', 'xls', 'csv'],
+  csv:  ['xlsx', 'xls', 'ods', 'tsv'],
+  tsv:  ['csv', 'xlsx', 'xls'],
 };
-const VIDEO_EXTS = new Set(['mp4', 'mkv', 'webm', 'avi', 'mov', 'wmv', 'flv', 'ts', 'm4v']);
-const AUDIO_EXTS = new Set(['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac']);
+
+const VIDEO_EXTS = new Set(['mp4', 'mkv', 'webm', 'avi', 'mov', 'wmv', 'flv', 'ts', 'm4v', 'mpg', 'mpeg', '3gp', 'ogv', 'vob']);
+const AUDIO_EXTS = new Set(['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac', 'wma', 'opus', 'aiff', 'amr']);
+const IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'tif', 'ico', 'svg']);
+
+function ffmpegArgs(inputPath, srcExt, targetExt, outputPath) {
+  // Animated gif → mp4: enforce even dimensions for yuv420p
+  if (srcExt === 'gif' && targetExt === 'mp4') {
+    return ['-i', inputPath, '-movflags', 'faststart', '-pix_fmt', 'yuv420p',
+            '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2', '-y', outputPath];
+  }
+  // Video → gif: scale down + 12fps to keep size sane
+  if (VIDEO_EXTS.has(srcExt) && targetExt === 'gif') {
+    return ['-i', inputPath, '-vf', 'fps=12,scale=480:-1:flags=lanczos', '-y', outputPath];
+  }
+  // Video → mp3: extract audio
+  if (VIDEO_EXTS.has(srcExt) && targetExt === 'mp3') {
+    return ['-i', inputPath, '-vn', '-acodec', 'libmp3lame', '-q:a', '2', '-y', outputPath];
+  }
+  // Audio re-encode is always needed (no two audio containers share codecs cleanly)
+  if (AUDIO_EXTS.has(srcExt)) {
+    return ['-i', inputPath, '-y', outputPath];
+  }
+  // Video → video: try stream copy unless webm is involved (vp9/opus required)
+  const needsEncode = targetExt === 'webm' || srcExt === 'webm';
+  return needsEncode ? ['-i', inputPath, '-y', outputPath]
+                     : ['-i', inputPath, '-c', 'copy', '-y', outputPath];
+}
 
 function convertFile(inputPath, targetExt, outDir) {
   return new Promise((resolve, reject) => {
     const srcExt = path.extname(inputPath).slice(1).toLowerCase();
     const baseName = path.basename(inputPath, path.extname(inputPath));
     const outputPath = path.join(outDir, `${baseName}.${targetExt}`);
-    if (VIDEO_EXTS.has(srcExt) || AUDIO_EXTS.has(srcExt)) {
-      const needsEncode = AUDIO_EXTS.has(srcExt) || targetExt === 'webm' || srcExt === 'webm';
-      const args = needsEncode ? ['-i', inputPath, '-y', outputPath] : ['-i', inputPath, '-c', 'copy', '-y', outputPath];
-      execFile('ffmpeg', args, { timeout: 600000 }, (err) => err ? reject(err) : resolve(outputPath));
+
+    if (VIDEO_EXTS.has(srcExt) || AUDIO_EXTS.has(srcExt) || (srcExt === 'gif' && targetExt === 'mp4')) {
+      const args = ffmpegArgs(inputPath, srcExt, targetExt, outputPath);
+      execFile('ffmpeg', args, { timeout: 600000 }, err => err ? reject(err) : resolve(outputPath));
+    } else if (IMAGE_EXTS.has(srcExt)) {
+      // ImageMagick: flatten transparency when going to a non-alpha format
+      const flat = ['jpg', 'jpeg', 'bmp'].includes(targetExt)
+        ? ['-background', 'white', '-flatten']
+        : [];
+      execFile('convert', [inputPath, ...flat, outputPath], { timeout: 120000 },
+        err => err ? reject(err) : resolve(outputPath));
     } else {
-      execFile('soffice', ['--headless', '--convert-to', targetExt, '--outdir', outDir, inputPath], { timeout: 120000 }, (err) => err ? reject(err) : resolve(outputPath));
+      execFile('soffice', ['--headless', '--convert-to', targetExt, '--outdir', outDir, inputPath],
+        { timeout: 180000 }, err => err ? reject(err) : resolve(outputPath));
     }
   });
 }
@@ -380,6 +470,8 @@ app.post('/api/upload/confirm', async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+app.get('/api/conversion/formats', (req, res) => res.json(SUPPORTED_CONVERSIONS));
 
 app.post('/api/conversion/convert', uploadConv.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });

@@ -4,14 +4,22 @@ let supportedFormats = {};
 
 const FORMAT_LABELS = {
   // Documents
-  pdf: 'PDF', docx: 'DOCX', doc: 'DOC',
-  xlsx: 'XLSX', xls: 'XLS', csv: 'CSV',
+  pdf: 'PDF', docx: 'DOCX', doc: 'DOC', odt: 'ODT', rtf: 'RTF',
+  txt: 'TXT', html: 'HTML', epub: 'EPUB',
+  // Spreadsheets
+  xlsx: 'XLSX', xls: 'XLS', ods: 'ODS', csv: 'CSV', tsv: 'TSV',
+  // Presentations
+  ppt: 'PPT', pptx: 'PPTX', odp: 'ODP',
   // Video
-  mp4: 'MP4', mkv: 'MKV', webm: 'WebM', avi: 'AVI',
-  mov: 'MOV', wmv: 'WMV', flv:  'FLV',  ts:  'TS', m4v: 'M4V',
+  mp4: 'MP4', mkv: 'MKV', webm: 'WebM', avi: 'AVI', mov: 'MOV',
+  wmv: 'WMV', flv: 'FLV', ts: 'TS', m4v: 'M4V',
+  mpg: 'MPG', mpeg: 'MPEG', '3gp': '3GP', ogv: 'OGV', vob: 'VOB',
   // Audio
-  mp3: 'MP3', wav: 'WAV', ogg: 'OGG',
-  m4a: 'M4A', flac: 'FLAC', aac: 'AAC',
+  mp3: 'MP3', wav: 'WAV', ogg: 'OGG', m4a: 'M4A', flac: 'FLAC',
+  aac: 'AAC', wma: 'WMA', opus: 'Opus', aiff: 'AIFF', amr: 'AMR',
+  // Image
+  jpg: 'JPG', jpeg: 'JPEG', png: 'PNG', gif: 'GIF', bmp: 'BMP',
+  webp: 'WebP', tiff: 'TIFF', tif: 'TIF', ico: 'ICO', svg: 'SVG',
 };
 
 // ── Init ──────────────────────────────────────────────────────
@@ -119,11 +127,23 @@ async function startConversion() {
 // ── Formats reference ─────────────────────────────────────────
 function renderFormatsReference() {
   const ICONS = {
-    pdf: '📄', docx: '📝', doc: '📝',
-    xlsx: '📊', xls: '📊', csv: '📋',
-    mp4: '🎬', mkv: '🎬', webm: '🎬', avi: '🎬',
-    mov: '🎬', wmv: '🎬', flv: '🎬', ts: '🎬', m4v: '🎬',
-    mp3: '🎵', wav: '🎵', ogg: '🎵', m4a: '🎵', flac: '🎵', aac: '🎵',
+    // Documents
+    pdf: '📄', docx: '📝', doc: '📝', odt: '📝', rtf: '📝',
+    txt: '📄', html: '🌐', epub: '📚',
+    // Spreadsheets
+    xlsx: '📊', xls: '📊', ods: '📊', csv: '📋', tsv: '📋',
+    // Presentations
+    ppt: '📽️', pptx: '📽️', odp: '📽️',
+    // Video
+    mp4: '🎬', mkv: '🎬', webm: '🎬', avi: '🎬', mov: '🎬',
+    wmv: '🎬', flv: '🎬', ts: '🎬', m4v: '🎬',
+    mpg: '🎬', mpeg: '🎬', '3gp': '🎬', ogv: '🎬', vob: '🎬',
+    // Audio
+    mp3: '🎵', wav: '🎵', ogg: '🎵', m4a: '🎵', flac: '🎵',
+    aac: '🎵', wma: '🎵', opus: '🎵', aiff: '🎵', amr: '🎵',
+    // Image
+    jpg: '🖼️', jpeg: '🖼️', png: '🖼️', gif: '🖼️', bmp: '🖼️',
+    webp: '🖼️', tiff: '🖼️', tif: '🖼️', ico: '🖼️', svg: '🖼️',
   };
 
   document.getElementById('formats-grid').innerHTML = Object.entries(supportedFormats)
