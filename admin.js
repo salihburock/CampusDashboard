@@ -216,7 +216,12 @@ function filePickerHtml(currentValue, onchangeExpr, uploadCall) {
 
 // ── Section Operations ────────────────────────────────────────
 function addSection() {
-  state.sections.push({ title: 'New Section', type: 'notes', collapsed: false, items: [] });
+  state.sections.push({ title: 'New Section', type: 'notes', collapsed: false, public: false, items: [] });
+  renderSections();
+}
+
+function toggleSectionPublic(i) {
+  state.sections[i].public = !state.sections[i].public;
   renderSections();
 }
 
@@ -339,6 +344,11 @@ function sectionHtml(section, i) {
                  onchange="state.sections[${i}].collapsed = this.checked">
           Collapsed by default
         </label>
+        <button onclick="toggleSectionPublic(${i})"
+                class="btn-sm btn-visibility ${section.public ? 'is-public' : 'is-private'}"
+                title="${section.public ? 'Visible to guests — click to make private' : 'Hidden from guests — click to make public'}">
+          ${section.public ? '🌐 Public' : '🔒 Private'}
+        </button>
         <div class="section-move-btns">
           <button onclick="moveSection(${i}, -1)" class="icon-btn"
                   title="Move up" ${i === 0 ? 'disabled' : ''}>↑</button>

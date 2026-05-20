@@ -497,8 +497,13 @@ app.get('/api/users', (req, res) => {
 
 // ── API Routes ────────────────────────────────────────────────
 app.get('/api/data', (req, res) => {
-  try { res.json(JSON.parse(fs.readFileSync(req.paths.DATA_FILE, 'utf8'))); }
-  catch { res.status(500).json({ error: 'Could not read data file' }); }
+  try {
+    const data = JSON.parse(fs.readFileSync(req.paths.DATA_FILE, 'utf8'));
+    if (req.session.mode === 'guest') {
+      data.sections = (data.sections || []).filter(s => s.public === true);
+    }
+    res.json(data);
+  } catch { res.status(500).json({ error: 'Could not read data file' }); }
 });
 
 app.put('/api/data', requireUser, (req, res) => {
