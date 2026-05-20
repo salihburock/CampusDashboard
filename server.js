@@ -8,53 +8,116 @@ const { execFile } = require('child_process');
 const AdmZip       = require('adm-zip');
 const session      = require('express-session');
 const cookieParser = require('cookie-parser');
+const bcrypt       = require('bcryptjs');
 
-const app       = express();
-const PORT      = process.env.PORT || 3000;
+const app  = express();
+const PORT = process.env.PORT || 3000;
 
-// -- Session setup --
+// ── Users ─────────────────────────────────────────────────────
+const USERS_FILE = path.join(__dirname, 'users.json');
+
+function loadUsers() {
+  try { return JSON.parse(fs.readFileSync(USERS_FILE, 'utf8')); }
+  catch { return []; }
+}
+function saveUsers(users) {
+  fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
+}
+function findUser(username) {
+  return loadUsers().find(u => u.username === username);
+}
+
+// Bootstrap: create default user on first run
+if (!fs.existsSync(USERS_FILE)) {
+  saveUsers([{
+    username: 'admin',
+    passwordHash: bcrypt.hashSync('REDACTED', 10),
+    createdAt: new Date().toISOString()
+  }]);
+  console.log('Created default user: admin');
+}
+
+// ── Per-user data directories ─────────────────────────────────
+function ensureUserDirs(username) {
+  const userDir = path.join(__dirname, 'userdata', username);
+  const docsDir = path.join(userDir, 'docs');
+  if (!fs.existsSync(docsDir)) fs.mkdirSync(docsDir, { recursive: true });
+
+  const dataFile = path.join(userDir, 'data.json');
+  if (!fs.existsSync(dataFile)) {
+    const legacy = path.join(__dirname, 'data.json');
+    if (username === 'admin' && fs.existsSync(legacy)) {
+      fs.copyFileSync(legacy, dataFile);
+    } else {
+      fs.writeFileSync(dataFile, JSON.stringify({ title: `${username}'s Dashboard`, sections: [] }, null, 2));
+    }
+  }
+
+  const regFile = path.join(userDir, 'docs-registry.json');
+  if (!fs.existsSync(regFile)) {
+    const legacy = path.join(__dirname, 'docs-registry.json');
+    if (username === 'admin' && fs.existsSync(legacy)) {
+      fs.copyFileSync(legacy, regFile);
+    } else {
+      fs.writeFileSync(regFile, JSON.stringify({}, null, 2));
+    }
+  }
+
+  // Migrate legacy docs/ for admin
+  const legacyDocs = path.join(__dirname, 'docs');
+  if (username === 'admin' && fs.existsSync(legacyDocs)) {
+    for (const f of fs.readdirSync(legacyDocs)) {
+      const dest = path.join(docsDir, f);
+      if (!fs.existsSync(dest)) {
+        try { fs.copyFileSync(path.join(legacyDocs, f), dest); } catch {}
+      }
+    }
+  }
+}
+
+// Ensure dirs for all existing users on startup
+for (const u of loadUsers()) ensureUserDirs(u.username);
+
+// ── Session setup ─────────────────────────────────────────────
 app.use(cookieParser());
 app.use(session({
-  secret: 'REDACTED',
+  secret: process.env.SESSION_SECRET || 'REDACTED',
   resave: false,
   saveUninitialized: false,
-  cookie: { maxAge: 24 * 60 * 60 * 1000 } // 24 hours
+  cookie: { maxAge: 24 * 60 * 60 * 1000 }
 }));
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// -- Auth Middleware --
-const publicPaths = ['/login.html', '/auth/login'];
+// ── Auth Middleware ───────────────────────────────────────────
+const publicPaths = ['/login.html', '/auth/login', '/auth/register', '/api/users'];
 app.use((req, res, next) => {
   if (publicPaths.includes(req.path)) return next();
   if (req.session && req.session.user) return next();
+  if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Not authenticated' });
   res.redirect('/login.html');
 });
 
-// -- Path Helper --
+// ── Path Helper ───────────────────────────────────────────────
 function getPaths(req) {
-  const isGuest = req.session && req.session.mode === 'guest';
-  
-  const docsDir = path.join(__dirname, isGuest ? 'docs_guest' : 'docs');
-  if (!fs.existsSync(docsDir)) fs.mkdirSync(docsDir, { recursive: true });
-
-  const dataFile = path.join(__dirname, isGuest ? 'data_guest.json' : 'data.json');
-  if (!fs.existsSync(dataFile)) {
-    // Initialize guest data if it doesn't exist
-    const defaultData = { title: 'Guest Dashboard', sections: [] };
-    fs.writeFileSync(dataFile, JSON.stringify(defaultData, null, 2));
+  const mode = req.session && req.session.mode;
+  let owner;
+  if (mode === 'guest') {
+    owner = req.session.guestViewUser;
+    if (!owner || !findUser(owner)) return null;
+  } else {
+    owner = req.session.user;
   }
+  if (!owner) return null;
 
-  const registryFile = path.join(__dirname, isGuest ? 'docs-registry_guest.json' : 'docs-registry.json');
-  if (!fs.existsSync(registryFile)) {
-    fs.writeFileSync(registryFile, JSON.stringify({}, null, 2));
-  }
-
+  ensureUserDirs(owner);
+  const userDir = path.join(__dirname, 'userdata', owner);
   return {
-    DATA_FILE: dataFile,
-    DOCS_DIR: docsDir,
-    REGISTRY_FILE: registryFile
+    DATA_FILE:     path.join(userDir, 'data.json'),
+    DOCS_DIR:      path.join(userDir, 'docs'),
+    REGISTRY_FILE: path.join(userDir, 'docs-registry.json'),
+    owner
   };
 }
 
@@ -62,11 +125,25 @@ function getPaths(req) {
 app.use((req, res, next) => {
   if (req.session && req.session.user) {
     req.paths = getPaths(req);
+    if (!req.paths && req.session.mode === 'guest') {
+      req.session.destroy();
+      return req.path.startsWith('/api/')
+        ? res.status(401).json({ error: 'No user selected' })
+        : res.redirect('/login.html');
+    }
   }
   next();
 });
 
-// -- Registry helpers --
+// ── Guest write guard ─────────────────────────────────────────
+function requireUser(req, res, next) {
+  if (!req.session || req.session.mode === 'guest') {
+    return res.status(403).json({ error: 'Read-only in guest mode' });
+  }
+  next();
+}
+
+// ── Registry helpers ──────────────────────────────────────────
 function loadRegistry(paths) {
   try { return JSON.parse(fs.readFileSync(paths.REGISTRY_FILE, 'utf8')); }
   catch { return {}; }
@@ -232,8 +309,6 @@ const convStorage = multer.diskStorage({
 const uploadConv = multer({ storage: convStorage, limits: { fileSize: 500 * 1024 * 1024 } });
 
 // ── Conversion helpers ────────────────────────────────────────
-// 50 source formats: 24 ffmpeg (video+audio), 10 imagemagick (image),
-// 16 soffice (document/spreadsheet/presentation).
 const SUPPORTED_CONVERSIONS = {
   // ── Video (ffmpeg) ─────────────────────────────────────────
   mp4:  ['mkv', 'webm', 'avi', 'mov', 'gif', 'mp3'],
@@ -299,24 +374,19 @@ const AUDIO_EXTS = new Set(['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac', 'wma', 'o
 const IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'tif', 'ico', 'svg']);
 
 function ffmpegArgs(inputPath, srcExt, targetExt, outputPath) {
-  // Animated gif → mp4: enforce even dimensions for yuv420p
   if (srcExt === 'gif' && targetExt === 'mp4') {
     return ['-i', inputPath, '-movflags', 'faststart', '-pix_fmt', 'yuv420p',
             '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2', '-y', outputPath];
   }
-  // Video → gif: scale down + 12fps to keep size sane
   if (VIDEO_EXTS.has(srcExt) && targetExt === 'gif') {
     return ['-i', inputPath, '-vf', 'fps=12,scale=480:-1:flags=lanczos', '-y', outputPath];
   }
-  // Video → mp3: extract audio
   if (VIDEO_EXTS.has(srcExt) && targetExt === 'mp3') {
     return ['-i', inputPath, '-vn', '-acodec', 'libmp3lame', '-q:a', '2', '-y', outputPath];
   }
-  // Audio re-encode is always needed (no two audio containers share codecs cleanly)
   if (AUDIO_EXTS.has(srcExt)) {
     return ['-i', inputPath, '-y', outputPath];
   }
-  // Video → video: try stream copy unless webm is involved (vp9/opus required)
   const needsEncode = targetExt === 'webm' || srcExt === 'webm';
   return needsEncode ? ['-i', inputPath, '-y', outputPath]
                      : ['-i', inputPath, '-c', 'copy', '-y', outputPath];
@@ -332,7 +402,6 @@ function convertFile(inputPath, targetExt, outDir) {
       const args = ffmpegArgs(inputPath, srcExt, targetExt, outputPath);
       execFile('ffmpeg', args, { timeout: 600000 }, err => err ? reject(err) : resolve(outputPath));
     } else if (IMAGE_EXTS.has(srcExt)) {
-      // ImageMagick: flatten transparency when going to a non-alpha format
       const flat = ['jpg', 'jpeg', 'bmp'].includes(targetExt)
         ? ['-background', 'white', '-flatten']
         : [];
@@ -347,23 +416,83 @@ function convertFile(inputPath, targetExt, outDir) {
 
 // ── Auth Routes ───────────────────────────────────────────────
 app.post('/auth/login', (req, res) => {
-  const { username, password, guest } = req.body;
+  const { username, password, guest, viewUser } = req.body;
+
   if (guest) {
+    if (!viewUser) return res.status(400).json({ error: 'viewUser required' });
+    if (!findUser(viewUser)) return res.status(400).json({ error: 'User not found' });
     req.session.user = 'guest';
     req.session.mode = 'guest';
+    req.session.guestViewUser = viewUser;
     return res.json({ ok: true });
   }
-  if (username === 'admin' && password === 'REDACTED') {
-    req.session.user = 'admin';
-    req.session.mode = 'admin';
-    return res.json({ ok: true });
+
+  if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
+  const user = findUser(username);
+  if (!user || !bcrypt.compareSync(password, user.passwordHash)) {
+    return res.status(401).json({ error: 'Invalid credentials' });
   }
-  res.status(401).json({ error: 'Invalid credentials' });
+  req.session.user = username;
+  req.session.mode = 'user';
+  ensureUserDirs(username);
+  res.json({ ok: true });
+});
+
+app.post('/auth/register', (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
+  if (!/^[a-z0-9_]{3,20}$/.test(username)) {
+    return res.status(400).json({ error: 'Username: 3–20 chars, lowercase letters/numbers/underscores only' });
+  }
+  if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+
+  const users = loadUsers();
+  if (users.find(u => u.username === username)) {
+    return res.status(409).json({ error: 'Username already taken' });
+  }
+
+  users.push({ username, passwordHash: bcrypt.hashSync(password, 10), createdAt: new Date().toISOString() });
+  saveUsers(users);
+  ensureUserDirs(username);
+
+  req.session.user = username;
+  req.session.mode = 'user';
+  res.json({ ok: true });
+});
+
+app.post('/auth/change-password', (req, res) => {
+  if (!req.session || req.session.mode === 'guest') return res.status(403).json({ error: 'Forbidden' });
+  const { currentPassword, newPassword } = req.body;
+  if (!currentPassword || !newPassword) return res.status(400).json({ error: 'Both passwords required' });
+  if (newPassword.length < 6) return res.status(400).json({ error: 'New password must be at least 6 characters' });
+
+  const users = loadUsers();
+  const user = users.find(u => u.username === req.session.user);
+  if (!user || !bcrypt.compareSync(currentPassword, user.passwordHash)) {
+    return res.status(401).json({ error: 'Current password incorrect' });
+  }
+  user.passwordHash = bcrypt.hashSync(newPassword, 10);
+  saveUsers(users);
+  res.json({ ok: true });
 });
 
 app.get('/auth/logout', (req, res) => {
   req.session.destroy();
   res.redirect('/login.html');
+});
+
+app.get('/auth/me', (req, res) => {
+  if (!req.session || !req.session.user) return res.status(401).json({ error: 'Not authenticated' });
+  res.json({
+    username:      req.session.user,
+    mode:          req.session.mode,
+    guestViewUser: req.session.guestViewUser || null
+  });
+});
+
+// ── Public user list (for guest picker) ───────────────────────
+app.get('/api/users', (req, res) => {
+  res.json(loadUsers().map(u => u.username));
 });
 
 // ── API Routes ────────────────────────────────────────────────
@@ -372,7 +501,7 @@ app.get('/api/data', (req, res) => {
   catch { res.status(500).json({ error: 'Could not read data file' }); }
 });
 
-app.put('/api/data', (req, res) => {
+app.put('/api/data', requireUser, (req, res) => {
   try { fs.writeFileSync(req.paths.DATA_FILE, JSON.stringify(req.body, null, 2)); res.json({ ok: true }); }
   catch { res.status(500).json({ error: 'Could not write data file' }); }
 });
@@ -401,12 +530,12 @@ app.get('/api/docs', (req, res) => {
   res.json(files);
 });
 
-app.post('/api/upload', uploadDocs.array('pdf', 20), (req, res) => {
+app.post('/api/upload', requireUser, uploadDocs.array('pdf', 20), (req, res) => {
   if (!req.files || !req.files.length) return res.status(400).json({ error: 'No valid PDF files received' });
   res.json(req.files.map(f => ({ name: f.filename, path: `docs/${f.filename}` })));
 });
 
-app.delete('/api/docs/:filename', (req, res) => {
+app.delete('/api/docs/:filename', requireUser, (req, res) => {
   const filename = path.basename(req.params.filename);
   const file = path.join(req.paths.DOCS_DIR, filename);
   if (fs.existsSync(file)) fs.unlinkSync(file);
@@ -425,7 +554,7 @@ app.get('/api/upload/stage-info', async (req, res) => {
   res.json({ ollama, gemini: !!GEMINI_KEY });
 });
 
-app.post('/api/upload/stage', uploadSyllabus.single('file'), async (req, res) => {
+app.post('/api/upload/stage', requireUser, uploadSyllabus.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file received' });
   const id = crypto.randomBytes(8).toString('hex');
   _staged[id] = { tempPath: req.file.path, originalName: req.file.originalname, stagedAt: Date.now() };
@@ -443,7 +572,7 @@ app.get('/api/upload/stage/:id', (req, res) => {
   res.json({ originalName: s.originalName, suggested: s.suggested ?? null, geminiError: s.geminiError ?? null, ready: 'suggested' in s });
 });
 
-app.post('/api/upload/confirm', async (req, res) => {
+app.post('/api/upload/confirm', requireUser, async (req, res) => {
   const { id, name } = req.body || {};
   if (!id || !name) return res.status(400).json({ error: 'id and name required' });
   const s = _staged[id];
@@ -499,8 +628,27 @@ app.get('/docs/:filename', (req, res) => {
   else res.status(404).send('Not found');
 });
 
-app.get('/edit', (req, res) => res.sendFile(path.join(__dirname, 'admin.html')));
+// ── Page Routes ───────────────────────────────────────────────
+app.get('/edit', (req, res) => {
+  if (req.session.mode === 'guest') return res.redirect('/');
+  res.sendFile(path.join(__dirname, 'admin.html'));
+});
+
+app.get('/account', (req, res) => {
+  if (req.session.mode === 'guest') return res.redirect('/');
+  res.sendFile(path.join(__dirname, 'account.html'));
+});
+
 app.get('/conversion', (req, res) => res.sendFile(path.join(__dirname, 'conversion.html')));
+
+// ── Security: block sensitive files from static ───────────────
+app.use((req, res, next) => {
+  const blocked = ['/users.json', '/data.json', '/data_guest.json', '/docs-registry.json', '/docs-registry_guest.json'];
+  if (blocked.includes(req.path) || req.path.startsWith('/userdata/')) {
+    return res.status(403).end();
+  }
+  next();
+});
 
 app.use(express.static(__dirname));
 

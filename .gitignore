@@ -148,3 +148,5 @@ data.json
 data_guest.json
 docs-registry.json
 docs-registry_guest.json
+users.json
+userdata/

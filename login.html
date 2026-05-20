@@ -1,92 +1,224 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Login - Campus Dashboard</title>
-    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; color: #1c1e21; background-image: url("https://www.ozyegin.edu.tr/sites/default/files/default-photo.jpg");background-repeat: no-repeat;background-size: cover;  backdrop-filter: blur(5px);}
-        .login-container { background: gray; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); width: 100%; max-width: 320px; }
-        h2 { margin-top: 0; text-align: center; color: #000002; }
-        .field { margin-bottom: 1rem; }
-        label { display: block; margin-bottom: 0.5rem; font-size: 0.9rem; font-weight: 600; }
-        input { width: 100%; padding: 0.6rem; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; font-size: 1rem; }
-        input:focus { outline: none; border-color: #1877f2; box-shadow: 0 0 0 2px rgba(24, 119, 242, 0.2); }
-        .buttons { display: flex; flex-direction: column; gap: 0.75rem; margin-top: 1.5rem; }
-        button { padding: 0.75rem; cursor: pointer; border: none; border-radius: 4px; font-size: 1rem; font-weight: 600; transition: background 0.2s; }
-        button[type='submit'] { background: #1877f2; color: white; }
-        button[type='submit']:hover { background: #166fe5; }
-        button.guest { background: #42b72a; color: white; }
-        button.guest:hover { background: #36a420; }
-        #error { color: #d93025; font-size: 0.85rem; text-align: center; margin-top: 1rem; display: none; }
-    </style>
+  <title>Login - Campus Dashboard</title>
+  <meta name='viewport' content='width=device-width, initial-scale=1.0'>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      display: flex; justify-content: center; align-items: center;
+      height: 100vh; margin: 0; color: #1c1e21;
+      background-image: url("https://www.ozyegin.edu.tr/sites/default/files/default-photo.jpg");
+      background-repeat: no-repeat; background-size: cover;
+    }
+    .box {
+      background: rgba(80,80,80,0.92);
+      padding: 2rem; border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      width: 100%; max-width: 320px;
+      color: #f0f0f0;
+    }
+    h2 { margin: 0 0 1.5rem; text-align: center; color: #fff; font-size: 1.3rem; }
+    .field { margin-bottom: 1rem; }
+    label { display: block; margin-bottom: 0.4rem; font-size: 0.85rem; font-weight: 600; color: #ccc; }
+    input[type=text], input[type=password] {
+      width: 100%; padding: 0.6rem; border: 1px solid #555;
+      border-radius: 4px; box-sizing: border-box; font-size: 1rem;
+      background: #333; color: #f0f0f0;
+    }
+    input:focus { outline: none; border-color: #1877f2; box-shadow: 0 0 0 2px rgba(24,119,242,0.3); }
+    .buttons { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 1.2rem; }
+    button {
+      padding: 0.7rem; cursor: pointer; border: none;
+      border-radius: 4px; font-size: 0.95rem; font-weight: 600;
+      transition: background 0.2s;
+    }
+    .btn-primary { background: #1877f2; color: white; }
+    .btn-primary:hover { background: #166fe5; }
+    .btn-guest { background: #42b72a; color: white; }
+    .btn-guest:hover { background: #36a420; }
+    .btn-secondary { background: transparent; color: #aaa; border: 1px solid #555; }
+    .btn-secondary:hover { background: #444; color: #fff; }
+    .error { color: #ff6b6b; font-size: 0.85rem; text-align: center; margin-top: 0.75rem; display: none; }
+    .divider {
+      display: flex; align-items: center; gap: 0.5rem;
+      margin: 1rem 0; color: #777; font-size: 0.8rem;
+    }
+    .divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: #555; }
+    .link-btn {
+      background: none; border: none; color: #6ab4ff; cursor: pointer;
+      font-size: 0.85rem; padding: 0; text-decoration: underline;
+    }
+    .link-btn:hover { color: #90c8ff; }
+    .footer-row { text-align: center; margin-top: 0.75rem; }
+
+    /* Guest user picker */
+    .user-pick-list { display: flex; flex-direction: column; gap: 0.5rem; margin: 0.75rem 0; }
+    .user-pick-btn {
+      background: #2c2c2c; color: #f0f0f0; border: 1px solid #555;
+      border-radius: 4px; padding: 0.6rem 1rem; cursor: pointer;
+      text-align: left; font-size: 0.95rem;
+      transition: background 0.15s;
+    }
+    .user-pick-btn:hover { background: #3a3a3a; border-color: #888; }
+    .view-hint { font-size: 0.78rem; color: #999; text-align: center; margin-bottom: 0.5rem; }
+
+    .hidden { display: none; }
+  </style>
 </head>
 <body>
-    <div class='login-container'>
-        <h2>Campus Dashboard</h2>
-        <form id='loginForm'>
-            <div class='field'>
-                <label>username:</label>
-                <input type='text' id='username' name='username' required>
-            </div>
-            <div class='field'>
-                <label>password:</label>
-                <input type='password' id='password' name='password' required>
-            </div>
-            <div class='buttons'>
-                <button type='submit' id='loginBtn'>login</button>
-                <button type='button' class='guest' id='guestBtn'>Misafir</button>
-            </div>
-            <p id='error'></p>
-        </form>
-    </div>
-    <script>
-        const loginForm = document.getElementById('loginForm');
-        const errorEl = document.getElementById('error');
-        
-        loginForm.onsubmit = async (e) => {
-            e.preventDefault();
-            errorEl.style.display = 'none';
-            try {
-                const res = await fetch('/auth/login', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        username: document.getElementById('username').value,
-                        password: document.getElementById('password').value
-                    })
-                });
-                if (res.ok) {
-                    window.location.href = '/';
-                } else {
-                    const data = await res.json();
-                    errorEl.innerText = data.error || 'Invalid credentials';
-                    errorEl.style.display = 'block';
-                }
-            } catch (err) {
-                errorEl.innerText = 'Connection error';
-                errorEl.style.display = 'block';
-            }
-        };
+  <div class='box'>
+    <h2>Campus Dashboard</h2>
 
-        document.getElementById('guestBtn').onclick = async () => {
-            errorEl.style.display = 'none';
-            try {
-                const res = await fetch('/auth/login', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ guest: true })
-                });
-                if (res.ok) {
-                    window.location.href = '/';
-                } else {
-                    errorEl.innerText = 'Failed to enter guest mode';
-                    errorEl.style.display = 'block';
-                }
-            } catch (err) {
-                errorEl.innerText = 'Connection error';
-                errorEl.style.display = 'block';
-            }
-        };
-    </script>
+    <!-- Login view -->
+    <div id='view-login'>
+      <form id='loginForm'>
+        <div class='field'>
+          <label>Kullanıcı adı</label>
+          <input type='text' id='username' autocomplete='username' required>
+        </div>
+        <div class='field'>
+          <label>Şifre</label>
+          <input type='password' id='password' autocomplete='current-password' required>
+        </div>
+        <div class='buttons'>
+          <button type='submit' class='btn-primary'>Giriş Yap</button>
+          <button type='button' class='btn-guest' id='guestBtn'>Misafir Olarak Gir</button>
+        </div>
+      </form>
+      <p class='error' id='login-error'></p>
+      <div class='divider'>veya</div>
+      <div class='footer-row'>
+        <button class='link-btn' onclick="showView('register')">Hesap Oluştur</button>
+      </div>
+    </div>
+
+    <!-- Register view -->
+    <div id='view-register' class='hidden'>
+      <form id='registerForm'>
+        <div class='field'>
+          <label>Kullanıcı adı <span style='color:#888;font-weight:400'>(3-20 karakter, a-z 0-9 _)</span></label>
+          <input type='text' id='reg-username' autocomplete='username' required pattern='[a-z0-9_]{3,20}'>
+        </div>
+        <div class='field'>
+          <label>Şifre <span style='color:#888;font-weight:400'>(en az 6 karakter)</span></label>
+          <input type='password' id='reg-password' autocomplete='new-password' required minlength='6'>
+        </div>
+        <div class='field'>
+          <label>Şifre tekrar</label>
+          <input type='password' id='reg-password2' autocomplete='new-password' required>
+        </div>
+        <div class='buttons'>
+          <button type='submit' class='btn-primary'>Kayıt Ol</button>
+        </div>
+      </form>
+      <p class='error' id='register-error'></p>
+      <div class='footer-row' style='margin-top:.75rem'>
+        <button class='link-btn' onclick="showView('login')">← Giriş ekranına dön</button>
+      </div>
+    </div>
+
+    <!-- Guest picker view -->
+    <div id='view-guest' class='hidden'>
+      <p class='view-hint'>Hangi kullanıcının panosunu görüntülemek istiyorsunuz?</p>
+      <div class='user-pick-list' id='user-pick-list'>
+        <div style='color:#888;text-align:center;font-size:.9rem'>Yükleniyor...</div>
+      </div>
+      <p class='error' id='guest-error'></p>
+      <div class='footer-row'>
+        <button class='link-btn' onclick="showView('login')">← Geri</button>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    function showView(name) {
+      ['login','register','guest'].forEach(v => {
+        document.getElementById('view-' + v).classList.toggle('hidden', v !== name);
+      });
+      // Clear errors
+      document.querySelectorAll('.error').forEach(e => { e.style.display = 'none'; e.textContent = ''; });
+    }
+
+    function showError(id, msg) {
+      const el = document.getElementById(id);
+      el.textContent = msg;
+      el.style.display = 'block';
+    }
+
+    // Login
+    document.getElementById('loginForm').onsubmit = async (e) => {
+      e.preventDefault();
+      const username = document.getElementById('username').value.trim();
+      const password = document.getElementById('password').value;
+      try {
+        const res = await fetch('/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password })
+        });
+        if (res.ok) { window.location.href = '/'; return; }
+        const data = await res.json();
+        showError('login-error', data.error || 'Giriş başarısız');
+      } catch { showError('login-error', 'Bağlantı hatası'); }
+    };
+
+    // Register
+    document.getElementById('registerForm').onsubmit = async (e) => {
+      e.preventDefault();
+      const username = document.getElementById('reg-username').value.trim().toLowerCase();
+      const password = document.getElementById('reg-password').value;
+      const password2 = document.getElementById('reg-password2').value;
+      if (password !== password2) { showError('register-error', 'Şifreler eşleşmiyor'); return; }
+      try {
+        const res = await fetch('/auth/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password })
+        });
+        if (res.ok) { window.location.href = '/'; return; }
+        const data = await res.json();
+        showError('register-error', data.error || 'Kayıt başarısız');
+      } catch { showError('register-error', 'Bağlantı hatası'); }
+    };
+
+    // Guest: show user picker
+    document.getElementById('guestBtn').onclick = async () => {
+      showView('guest');
+      const listEl = document.getElementById('user-pick-list');
+      try {
+        const res = await fetch('/api/users');
+        const users = await res.json();
+        if (!users.length) {
+          listEl.innerHTML = '<div style="color:#888;text-align:center;font-size:.9rem">Henüz kullanıcı yok</div>';
+          return;
+        }
+        listEl.innerHTML = '';
+        for (const u of users) {
+          const btn = document.createElement('button');
+          btn.className = 'user-pick-btn';
+          btn.textContent = u;
+          btn.onclick = () => loginAsGuest(u);
+          listEl.appendChild(btn);
+        }
+      } catch {
+        listEl.innerHTML = '<div style="color:#ff6b6b;text-align:center">Kullanıcılar yüklenemedi</div>';
+      }
+    };
+
+    async function loginAsGuest(viewUser) {
+      try {
+        const res = await fetch('/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ guest: true, viewUser })
+        });
+        if (res.ok) { window.location.href = '/'; return; }
+        const data = await res.json();
+        showError('guest-error', data.error || 'Giriş başarısız');
+      } catch { showError('guest-error', 'Bağlantı hatası'); }
+    }
+  </script>
 </body>
 </html>

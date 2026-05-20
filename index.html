@@ -14,8 +14,11 @@
     </div>
     <div class="header-right">
       <div id="clock" class="clock"></div>
+      <span id="user-badge" style="font-size:.8rem;opacity:.7;padding:0 .25rem"></span>
       <button id="theme-toggle" class="icon-btn" title="Toggle dark mode">☾</button>
-      <a href="/edit" class="icon-btn" title="Edit dashboard">✎</a>
+      <a id="edit-link" href="/edit" class="icon-btn" title="Edit dashboard">✎</a>
+      <a id="account-link" href="/account" class="icon-btn" title="Account">👤</a>
+      <a href="/auth/logout" class="icon-btn" title="Logout">⏻</a>
     </div>
   </header>
 
@@ -39,6 +42,25 @@
 
   <script src="app.js"></script>
   <script src="upload-overlay.js"></script>
+  <script>
+    (async () => {
+      try {
+        const res = await fetch('/auth/me');
+        const me = await res.json();
+        const badge = document.getElementById('user-badge');
+        const editLink = document.getElementById('edit-link');
+        const accountLink = document.getElementById('account-link');
+
+        if (me.mode === 'guest') {
+          badge.textContent = `Misafir · ${me.guestViewUser}`;
+          editLink.style.display = 'none';
+          accountLink.style.display = 'none';
+        } else {
+          badge.textContent = me.username;
+        }
+      } catch {}
+    })();
+  </script>
 
 </body>
 </html>

@@ -9,6 +9,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",
     "adm-zip": "^0.5.17",
+    "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.7",
     "express": "^4.18.2",
     "express-session": "^1.19.0",

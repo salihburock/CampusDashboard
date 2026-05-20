@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Account - Campus Dashboard</title>
+  <link rel="stylesheet" href="style.css" />
+  <style>
+    .account-container {
+      max-width: 400px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+    }
+    .account-card {
+      background: var(--card-bg, #fff);
+      border: 1px solid var(--border, #e0e0e0);
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin-bottom: 1.25rem;
+    }
+    .account-card h2 {
+      margin: 0 0 1rem;
+      font-size: 1rem;
+      color: var(--muted, #666);
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+    .username-display {
+      font-size: 1.4rem;
+      font-weight: 700;
+      color: var(--text, #1c1e21);
+    }
+    .joined-date {
+      font-size: .85rem;
+      color: var(--muted, #888);
+      margin-top: .25rem;
+    }
+    .field { margin-bottom: 1rem; }
+    .field label {
+      display: block;
+      font-size: .85rem;
+      font-weight: 600;
+      color: var(--muted, #666);
+      margin-bottom: .35rem;
+    }
+    .field input {
+      width: 100%;
+      padding: .6rem .75rem;
+      border: 1px solid var(--border, #ddd);
+      border-radius: 4px;
+      box-sizing: border-box;
+      font-size: .95rem;
+      background: var(--input-bg, #fff);
+      color: var(--text, #1c1e21);
+    }
+    .field input:focus {
+      outline: none;
+      border-color: #1877f2;
+      box-shadow: 0 0 0 2px rgba(24,119,242,.2);
+    }
+    .btn-save {
+      width: 100%;
+      padding: .7rem;
+      background: #1877f2;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      font-size: .95rem;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: .5rem;
+    }
+    .btn-save:hover { background: #166fe5; }
+    .btn-save:disabled { background: #aaa; cursor: default; }
+    .msg {
+      font-size: .85rem;
+      text-align: center;
+      margin-top: .75rem;
+      padding: .5rem;
+      border-radius: 4px;
+      display: none;
+    }
+    .msg.ok  { background: #d4edda; color: #155724; }
+    .msg.err { background: #f8d7da; color: #721c24; }
+    .btn-logout {
+      width: 100%;
+      padding: .7rem;
+      background: transparent;
+      color: var(--danger, #c0392b);
+      border: 1px solid var(--danger, #c0392b);
+      border-radius: 4px;
+      font-size: .95rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-logout:hover { background: var(--danger, #c0392b); color: #fff; }
+  </style>
+</head>
+<body>
+
+  <header class="site-header">
+    <div class="header-left">
+      <h1>Account</h1>
+    </div>
+    <div class="header-right">
+      <a href="/" class="icon-btn" title="Dashboard">← Dashboard</a>
+      <button id="theme-toggle" class="icon-btn" title="Toggle dark mode">☾</button>
+    </div>
+  </header>
+
+  <div class="account-container">
+
+    <div class="account-card">
+      <h2>Profile</h2>
+      <div class="username-display" id="display-username">—</div>
+      <div class="joined-date" id="display-joined"></div>
+    </div>
+
+    <div class="account-card">
+      <h2>Change Password</h2>
+      <form id="pw-form">
+        <div class="field">
+          <label>Current password</label>
+          <input type="password" id="cur-pw" autocomplete="current-password" required>
+        </div>
+        <div class="field">
+          <label>New password <span style="font-weight:400;color:var(--muted)">(min 6 chars)</span></label>
+          <input type="password" id="new-pw" autocomplete="new-password" required minlength="6">
+        </div>
+        <div class="field">
+          <label>Confirm new password</label>
+          <input type="password" id="new-pw2" autocomplete="new-password" required>
+        </div>
+        <button type="submit" class="btn-save" id="save-btn">Save Password</button>
+        <div class="msg" id="pw-msg"></div>
+      </form>
+    </div>
+
+    <div class="account-card">
+      <a href="/auth/logout" class="btn-logout" style="display:block;text-align:center;text-decoration:none">Logout</a>
+    </div>
+
+  </div>
+
+  <script>
+    // Theme
+    (function() {
+      const btn = document.getElementById('theme-toggle');
+      const saved = localStorage.getItem('theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      const isDark = saved ? saved === 'dark' : prefersDark;
+      function apply(dark) {
+        document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+        btn.textContent = dark ? '☀' : '☾';
+        localStorage.setItem('theme', dark ? 'dark' : 'light');
+      }
+      apply(isDark);
+      btn.addEventListener('click', () => apply(document.documentElement.getAttribute('data-theme') !== 'dark'));
+    })();
+
+    // Load user info
+    (async () => {
+      const res = await fetch('/auth/me');
+      const me = await res.json();
+      document.getElementById('display-username').textContent = me.username;
+    })();
+
+    // Change password
+    document.getElementById('pw-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const msgEl = document.getElementById('pw-msg');
+      const newPw = document.getElementById('new-pw').value;
+      const newPw2 = document.getElementById('new-pw2').value;
+
+      if (newPw !== newPw2) {
+        msgEl.textContent = 'Passwords do not match';
+        msgEl.className = 'msg err';
+        msgEl.style.display = 'block';
+        return;
+      }
+
+      const btn = document.getElementById('save-btn');
+      btn.disabled = true;
+      btn.textContent = 'Saving...';
+
+      try {
+        const res = await fetch('/auth/change-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            currentPassword: document.getElementById('cur-pw').value,
+            newPassword: newPw
+          })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          msgEl.textContent = 'Password changed successfully';
+          msgEl.className = 'msg ok';
+          document.getElementById('pw-form').reset();
+        } else {
+          msgEl.textContent = data.error || 'Failed to change password';
+          msgEl.className = 'msg err';
+        }
+      } catch {
+        msgEl.textContent = 'Connection error';
+        msgEl.className = 'msg err';
+      } finally {
+        msgEl.style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = 'Save Password';
+      }
+    };
+  </script>
+
+</body>
+</html>
