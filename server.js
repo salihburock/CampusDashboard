@@ -29,12 +29,18 @@ function findUser(username) {
 
 // Bootstrap: create default user on first run
 if (!fs.existsSync(USERS_FILE)) {
+  const defaultPassword = crypto.randomBytes(8).toString('hex');
   saveUsers([{
     username: 'admin',
-    passwordHash: bcrypt.hashSync('REDACTED', 10),
+    passwordHash: bcrypt.hashSync(defaultPassword, 10),
     createdAt: new Date().toISOString()
   }]);
-  console.log('Created default user: admin');
+  console.log('='.repeat(50));
+  console.log('First run — default admin account created.');
+  console.log(`  Username: admin`);
+  console.log(`  Password: ${defaultPassword}`);
+  console.log('Change this password after first login!');
+  console.log('='.repeat(50));
 }
 
 // ── Per-user data directories ─────────────────────────────────
@@ -45,33 +51,12 @@ function ensureUserDirs(username) {
 
   const dataFile = path.join(userDir, 'data.json');
   if (!fs.existsSync(dataFile)) {
-    const legacy = path.join(__dirname, 'data.json');
-    if (username === 'admin' && fs.existsSync(legacy)) {
-      fs.copyFileSync(legacy, dataFile);
-    } else {
-      fs.writeFileSync(dataFile, JSON.stringify({ title: `${username}'s Dashboard`, sections: [] }, null, 2));
-    }
+    fs.writeFileSync(dataFile, JSON.stringify({ title: `${username}'s Dashboard`, sections: [] }, null, 2));
   }
 
   const regFile = path.join(userDir, 'docs-registry.json');
   if (!fs.existsSync(regFile)) {
-    const legacy = path.join(__dirname, 'docs-registry.json');
-    if (username === 'admin' && fs.existsSync(legacy)) {
-      fs.copyFileSync(legacy, regFile);
-    } else {
-      fs.writeFileSync(regFile, JSON.stringify({}, null, 2));
-    }
-  }
-
-  // Migrate legacy docs/ for admin
-  const legacyDocs = path.join(__dirname, 'docs');
-  if (username === 'admin' && fs.existsSync(legacyDocs)) {
-    for (const f of fs.readdirSync(legacyDocs)) {
-      const dest = path.join(docsDir, f);
-      if (!fs.existsSync(dest)) {
-        try { fs.copyFileSync(path.join(legacyDocs, f), dest); } catch {}
-      }
-    }
+    fs.writeFileSync(regFile, JSON.stringify({}, null, 2));
   }
 }
 
