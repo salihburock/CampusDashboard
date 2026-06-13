@@ -20,10 +20,127 @@ function showToast(msg, isError = false) {
   setTimeout(() => t.classList.remove('show'), 2500);
 }
 
+// ── Semesters ─────────────────────────────────────────────────
+let semesters = { active: null, semesters: [], suggestedName: '' };
+let editingSem = null; // which semester the editor is currently editing
+
+function semQS() { return editingSem ? '?sem=' + encodeURIComponent(editingSem) : ''; }
+
+async function loadSemesters() {
+  try {
+    semesters = await (await fetch('/api/semesters')).json();
+  } catch { return; }
+  if (!editingSem || !semesters.semesters.some(s => s.id === editingSem)) {
+    editingSem = semesters.active;
+  }
+  renderSemesterBar();
+}
+
+function renderSemesterBar() {
+  const sel = document.getElementById('semester-select');
+  if (!sel) return;
+  sel.innerHTML = semesters.semesters.map(s => {
+    const marks = [];
+    if (s.id === semesters.active) marks.push('●');
+    if (s.archived) marks.push('🗄');
+    const suffix = marks.length ? '   ' + marks.join(' ') : '';
+    return `<option value="${esc(s.id)}" ${s.id === editingSem ? 'selected' : ''}>${esc(s.name)}${suffix}</option>`;
+  }).join('');
+
+  const cur = semesters.semesters.find(s => s.id === editingSem);
+  const isActive = !!cur && cur.id === semesters.active;
+
+  const statusEl = document.getElementById('semester-status');
+  if (statusEl) {
+    statusEl.textContent = isActive ? t('sem.active_badge') : (cur && cur.archived ? t('sem.archived') : '');
+    statusEl.className = 'semester-status ' + (isActive ? 'is-active' : (cur && cur.archived ? 'is-archived' : ''));
+  }
+  const actBtn = document.getElementById('sem-activate');
+  if (actBtn) actBtn.style.display = isActive ? 'none' : '';
+  const arcBtn = document.getElementById('sem-archive');
+  if (arcBtn) {
+    arcBtn.textContent = (cur && cur.archived) ? t('sem.unarchive') : t('sem.archive');
+    arcBtn.style.display = isActive ? 'none' : ''; // archive the active one via "New Semester" flow
+  }
+  const delBtn = document.getElementById('sem-delete');
+  if (delBtn) delBtn.style.display = semesters.semesters.length <= 1 ? 'none' : '';
+}
+
+function switchSemester(id) { editingSem = id; renderSemesterBar(); loadData(); }
+
+async function activateSemester() {
+  await fetch(`/api/semesters/${editingSem}/activate`, { method: 'POST' });
+  await loadSemesters();
+  showToast(t('sem.activated'));
+}
+
+async function toggleArchiveSemester() {
+  const cur = semesters.semesters.find(s => s.id === editingSem);
+  if (!cur) return;
+  await fetch(`/api/semesters/${editingSem}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ archived: !cur.archived })
+  });
+  const wasArchived = cur.archived;
+  await loadSemesters();
+  showToast(t(wasArchived ? 'sem.unarchived_ok' : 'sem.archived_ok'));
+}
+
+async function renameSemester() {
+  const cur = semesters.semesters.find(s => s.id === editingSem);
+  const name = prompt(t('sem.rename_prompt'), cur ? cur.name : '');
+  if (name == null || !name.trim()) return;
+  await fetch(`/api/semesters/${editingSem}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: name.trim() })
+  });
+  await loadSemesters();
+  showToast(t('sem.renamed'));
+}
+
+async function deleteSemester() {
+  const cur = semesters.semesters.find(s => s.id === editingSem);
+  if (!confirm(t('sem.delete_confirm', { name: cur ? cur.name : '' }))) return;
+  const res = await fetch(`/api/semesters/${editingSem}`, { method: 'DELETE' });
+  if (!res.ok) { const e = await res.json().catch(() => ({})); showToast(e.error || t('sem.err'), true); return; }
+  editingSem = null;
+  await loadSemesters();
+  await loadData();
+  showToast(t('sem.deleted'));
+}
+
+function openNewSemester() {
+  document.getElementById('sem-name-input').value = semesters.suggestedName || '';
+  document.getElementById('sem-archive-current').checked = true;
+  document.getElementById('semester-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('sem-name-input').focus(), 50);
+}
+function closeSemesterModal() {
+  document.getElementById('semester-modal').classList.add('hidden');
+}
+async function confirmNewSemester() {
+  const name = document.getElementById('sem-name-input').value.trim();
+  const archiveCurrent = document.getElementById('sem-archive-current').checked;
+  try {
+    const res = await fetch('/api/semesters', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, archiveCurrent })
+    });
+    const data = await res.json();
+    closeSemesterModal();
+    editingSem = data.id;
+    await loadSemesters();
+    await loadData();
+    showToast(t('sem.created'));
+  } catch { showToast(t('sem.err'), true); }
+}
+
+window.addEventListener('langchange', renderSemesterBar);
+
 // ── Load & Save ───────────────────────────────────────────────
 async function loadData() {
   try {
-    const [dataRes, pdfsRes] = await Promise.all([fetch('/api/data'), fetch('/api/docs')]);
+    const [dataRes, pdfsRes] = await Promise.all([fetch('/api/data' + semQS()), fetch('/api/docs')]);
     state = await dataRes.json();
     uploadedPdfs = await pdfsRes.json();
     document.getElementById('dashboard-title').value = state.title || '';
@@ -39,7 +156,7 @@ async function saveData() {
   btn.disabled = true; btn.textContent = t('adm.saving');
   try {
     state.title = document.getElementById('dashboard-title').value;
-    const res = await fetch('/api/data', {
+    const res = await fetch('/api/data' + semQS(), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(state)
@@ -875,7 +992,10 @@ async function confirmMoodleImport() {
     apply(document.documentElement.getAttribute('data-theme') !== 'dark'));
 })();
 
-loadData();
+(async function initAdmin() {
+  await loadSemesters();
+  await loadData();
+})();
 
 // ── Manual PDF Upload ──────────────────────────────────────────
 async function handleManualUpload(input) {

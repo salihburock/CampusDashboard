@@ -25,6 +25,24 @@
 
   <main class="container admin-main">
 
+    <!-- Semesters -->
+    <div class="admin-card">
+      <div class="admin-card-header">
+        <h2 data-i18n="sem.title">Semesters</h2>
+        <button onclick="openNewSemester()" class="btn-primary btn-sm" data-i18n="sem.new">+ New Semester</button>
+      </div>
+      <div class="semester-bar">
+        <select id="semester-select" class="field-select" onchange="switchSemester(this.value)"></select>
+        <span id="semester-status" class="semester-status"></span>
+        <div class="semester-actions">
+          <button id="sem-activate" onclick="activateSemester()" class="btn-secondary btn-sm" data-i18n="sem.make_active">Make Active</button>
+          <button id="sem-archive" onclick="toggleArchiveSemester()" class="btn-secondary btn-sm" data-i18n="sem.archive">Archive</button>
+          <button onclick="renameSemester()" class="btn-secondary btn-sm" data-i18n="sem.rename">Rename</button>
+          <button id="sem-delete" onclick="deleteSemester()" class="btn-danger btn-sm" data-i18n="sem.delete">Delete</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Dashboard Title -->
     <div class="admin-card">
       <label class="field-label" for="dashboard-title" data-i18n="adm.dash_title">Dashboard Title</label>
@@ -56,6 +74,29 @@
         Drag &amp; drop files anywhere on this page to upload and name them.
       </p>
       <div id="pdf-list"></div>
+    </div>
+
+    <!-- New Semester Modal -->
+    <div id="semester-modal" class="moodle-modal-backdrop hidden">
+      <div class="moodle-modal-box" style="width:min(94vw,440px)">
+        <div class="moodle-modal-header">
+          <h3 data-i18n="sem.new">New Semester</h3>
+          <button class="icon-btn" onclick="closeSemesterModal()">✕</button>
+        </div>
+        <div class="moodle-modal-body">
+          <label class="field-label-sm" data-i18n="sem.name_label">Semester name</label>
+          <input id="sem-name-input" class="field-input" type="text"
+                 onkeydown="if(event.key==='Enter')confirmNewSemester()">
+          <label class="toggle-label" style="margin-top:.75rem">
+            <input type="checkbox" id="sem-archive-current" checked>
+            <span data-i18n="sem.archive_current">Archive the current semester</span>
+          </label>
+        </div>
+        <div class="moodle-import-bar">
+          <button class="btn-primary btn-sm" onclick="confirmNewSemester()" data-i18n="sem.create">Create</button>
+          <button class="btn-secondary btn-sm" onclick="closeSemesterModal()" data-i18n="sem.cancel">Cancel</button>
+        </div>
+      </div>
     </div>
 
     <!-- Moodle Import Modal -->

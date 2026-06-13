@@ -316,26 +316,67 @@ function setupTheme() {
   });
 }
 
-// ── Init ──────────────────────────────────────────────────────
+// ── Dashboard loading ─────────────────────────────────────────
 
-(async function init() {
-  setupTheme();
-  startClock();
-  const openPdf = setupModal();
+let _openPdf = null;
 
+async function loadDashboard(sem) {
+  const app = document.getElementById("app");
   try {
-    const res = await fetch("/api/data");
+    const res = await fetch("/api/data" + (sem ? "?sem=" + encodeURIComponent(sem) : ""));
     const data = await res.json();
 
     document.title = data.title || "Dashboard";
     document.getElementById("site-title").textContent = data.title || "Dashboard";
 
-    const app = document.getElementById("app");
-    for (const section of data.sections) {
-      app.appendChild(renderSection(section, openPdf));
+    app.innerHTML = "";
+    const sections = data.sections || [];
+    if (!sections.length) {
+      app.innerHTML = `<p style="padding:2rem;color:var(--muted)">${t("app.empty")}</p>`;
+      return;
+    }
+    for (const section of sections) {
+      app.appendChild(renderSection(section, _openPdf));
     }
   } catch (e) {
-    document.getElementById("app").innerHTML =
+    app.innerHTML =
       '<p style="padding:2rem;color:var(--danger)">Failed to load — is the server running? (<code>npm start</code>)</p>';
   }
+}
+
+// Owner-only: lets you view (read-only) past/archived semesters from the dashboard
+async function setupSemesterViewer() {
+  const sel = document.getElementById("semester-view");
+  if (!sel) return;
+  try {
+    const sems = await (await fetch("/api/semesters")).json();
+    if (!sems.semesters || sems.semesters.length <= 1) return; // only show when there's a choice
+    sel.innerHTML = "";
+    for (const s of sems.semesters) {
+      const o = document.createElement("option");
+      o.value = s.id;
+      o.textContent = s.name + (s.id === sems.active ? "  ●" : "") + (s.archived ? "  🗄" : "");
+      if (s.id === sems.active) o.selected = true;
+      sel.appendChild(o);
+    }
+    sel.style.display = "";
+    sel.addEventListener("change", () => loadDashboard(sel.value));
+  } catch {}
+}
+
+// ── Init ──────────────────────────────────────────────────────
+
+(async function init() {
+  setupTheme();
+  startClock();
+  _openPdf = setupModal();
+
+  let isGuest = false;
+  try {
+    const me = await (await fetch("/auth/me")).json();
+    isGuest = me.mode === "guest";
+  } catch {}
+
+  if (!isGuest) await setupSemesterViewer();
+  await loadDashboard(null);
 })();

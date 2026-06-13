@@ -60,8 +60,53 @@ function ensureUserDirs(username) {
   }
 }
 
+// ── Semesters ─────────────────────────────────────────────────
+function currentTermName() {
+  const d = new Date();
+  const y = d.getFullYear(), m = d.getMonth(); // m: 0-11
+  if (m >= 1 && m <= 5) return `${y - 1}-${y} Spring`;
+  if (m >= 6 && m <= 7) return `${y} Summer`;
+  return `${y}-${y + 1} Fall`;
+}
+function semestersFile(owner)     { return path.join(__dirname, 'userdata', owner, 'semesters.json'); }
+function semesterDataFile(owner, id) { return path.join(__dirname, 'userdata', owner, 'semesters', `${id}.json`); }
+function newSemId() { return 'sem_' + crypto.randomBytes(5).toString('hex'); }
+
+// Lazily migrate a user to the semester model (legacy data.json → first semester)
+function ensureSemesters(owner) {
+  const f = semestersFile(owner);
+  if (fs.existsSync(f)) return;
+  const userDir = path.join(__dirname, 'userdata', owner);
+  const semDir  = path.join(userDir, 'semesters');
+  if (!fs.existsSync(semDir)) fs.mkdirSync(semDir, { recursive: true });
+
+  const id = newSemId();
+  let data = { title: `${owner}'s Dashboard`, sections: [] };
+  const legacy = path.join(userDir, 'data.json');
+  if (fs.existsSync(legacy)) { try { data = JSON.parse(fs.readFileSync(legacy, 'utf8')); } catch {} }
+
+  fs.writeFileSync(semesterDataFile(owner, id), JSON.stringify(data, null, 2));
+  fs.writeFileSync(f, JSON.stringify({
+    active: id,
+    semesters: [{ id, name: currentTermName(), archived: false, createdAt: new Date().toISOString() }]
+  }, null, 2));
+}
+function loadSemesters(owner) {
+  ensureSemesters(owner);
+  try { return JSON.parse(fs.readFileSync(semestersFile(owner), 'utf8')); }
+  catch { return { active: null, semesters: [] }; }
+}
+function saveSemesters(owner, data) {
+  fs.writeFileSync(semestersFile(owner), JSON.stringify(data, null, 2));
+}
+// Read the data file of a user's active semester (used for public listing)
+function loadActiveData(owner) {
+  const sems = loadSemesters(owner);
+  return JSON.parse(fs.readFileSync(semesterDataFile(owner, sems.active), 'utf8'));
+}
+
 // Ensure dirs for all existing users on startup
-for (const u of loadUsers()) ensureUserDirs(u.username);
+for (const u of loadUsers()) { ensureUserDirs(u.username); ensureSemesters(u.username); }
 
 // Ensure every user has a share token
 (function ensureShareTokens() {
@@ -108,11 +153,22 @@ function getPaths(req) {
 
   ensureUserDirs(owner);
   const userDir = path.join(__dirname, 'userdata', owner);
+
+  // Resolve which semester's data file to use.
+  // Guests always see the active semester; owners may target a specific one via ?sem=.
+  const sems = loadSemesters(owner);
+  let semId = sems.active;
+  if (mode !== 'guest' && req.query && req.query.sem &&
+      sems.semesters.some(s => s.id === req.query.sem)) {
+    semId = req.query.sem;
+  }
+
   return {
-    DATA_FILE:     path.join(userDir, 'data.json'),
+    DATA_FILE:     semesterDataFile(owner, semId),
     DOCS_DIR:      path.join(userDir, 'docs'),
     REGISTRY_FILE: path.join(userDir, 'docs-registry.json'),
-    owner
+    owner,
+    semId
   };
 }
 
@@ -446,9 +502,15 @@ app.post('/auth/register', (req, res) => {
     return res.status(409).json({ error: 'Username already taken' });
   }
 
-  users.push({ username, passwordHash: bcrypt.hashSync(password, 10), createdAt: new Date().toISOString() });
+  users.push({
+    username,
+    passwordHash: bcrypt.hashSync(password, 10),
+    shareToken: crypto.randomBytes(6).toString('hex'),
+    createdAt: new Date().toISOString()
+  });
   saveUsers(users);
   ensureUserDirs(username);
+  ensureSemesters(username);
 
   req.session.user = username;
   req.session.mode = 'user';
@@ -508,9 +570,7 @@ app.get('/api/share-info', (req, res) => {
 app.get('/api/users', (req, res) => {
   const listed = loadUsers().filter(u => {
     try {
-      const f = path.join(__dirname, 'userdata', u.username, 'data.json');
-      if (!fs.existsSync(f)) return false;
-      const data = JSON.parse(fs.readFileSync(f, 'utf8'));
+      const data = loadActiveData(u.username);
       return (data.sections || []).some(s => (s.visibility || (s.public ? 'public' : 'private')) === 'public');
     } catch { return false; }
   });
@@ -535,6 +595,73 @@ app.get('/api/data', (req, res) => {
 app.put('/api/data', requireUser, (req, res) => {
   try { fs.writeFileSync(req.paths.DATA_FILE, JSON.stringify(req.body, null, 2)); res.json({ ok: true }); }
   catch { res.status(500).json({ error: 'Could not write data file' }); }
+});
+
+// ── Semester management ───────────────────────────────────────
+app.get('/api/semesters', requireUser, (req, res) => {
+  const sems = loadSemesters(req.paths.owner);
+  res.json({ ...sems, suggestedName: currentTermName() });
+});
+
+// Create a new semester (optionally archiving the current one)
+app.post('/api/semesters', requireUser, (req, res) => {
+  const owner = req.paths.owner;
+  const sems  = loadSemesters(owner);
+  const name  = (req.body.name || '').trim() || currentTermName();
+  const id    = newSemId();
+
+  fs.writeFileSync(semesterDataFile(owner, id), JSON.stringify({ title: name, sections: [] }, null, 2));
+
+  if (req.body.archiveCurrent && sems.active) {
+    const cur = sems.semesters.find(s => s.id === sems.active);
+    if (cur) cur.archived = true;
+  }
+  sems.semesters.push({ id, name, archived: false, createdAt: new Date().toISOString() });
+  sems.active = id;
+  saveSemesters(owner, sems);
+  res.json({ id, semesters: sems });
+});
+
+// Rename and/or set archived flag
+app.patch('/api/semesters/:id', requireUser, (req, res) => {
+  const sems = loadSemesters(req.paths.owner);
+  const s = sems.semesters.find(x => x.id === req.params.id);
+  if (!s) return res.status(404).json({ error: 'Not found' });
+  if (typeof req.body.name === 'string' && req.body.name.trim()) s.name = req.body.name.trim();
+  if (typeof req.body.archived === 'boolean') {
+    s.archived = req.body.archived;
+    // Never leave the active semester archived
+    if (s.archived && sems.active === s.id) {
+      const fallback = sems.semesters.find(x => !x.archived);
+      if (fallback) sems.active = fallback.id;
+    }
+  }
+  saveSemesters(req.paths.owner, sems);
+  res.json(sems);
+});
+
+// Set as the active (current) semester — also unarchives it
+app.post('/api/semesters/:id/activate', requireUser, (req, res) => {
+  const sems = loadSemesters(req.paths.owner);
+  const s = sems.semesters.find(x => x.id === req.params.id);
+  if (!s) return res.status(404).json({ error: 'Not found' });
+  s.archived = false;
+  sems.active = s.id;
+  saveSemesters(req.paths.owner, sems);
+  res.json(sems);
+});
+
+app.delete('/api/semesters/:id', requireUser, (req, res) => {
+  const owner = req.paths.owner;
+  const sems  = loadSemesters(owner);
+  if (sems.semesters.length <= 1) return res.status(400).json({ error: 'Cannot delete the only semester' });
+  const idx = sems.semesters.findIndex(x => x.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Not found' });
+  const [removed] = sems.semesters.splice(idx, 1);
+  try { fs.unlinkSync(semesterDataFile(owner, removed.id)); } catch {}
+  if (sems.active === removed.id) sems.active = sems.semesters[0].id;
+  saveSemesters(owner, sems);
+  res.json(sems);
 });
 
 app.get('/api/courses', (req, res) => {
