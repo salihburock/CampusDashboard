@@ -3,6 +3,7 @@
 <head>
   <title>Login - Campus Dashboard</title>
   <meta name='viewport' content='width=device-width, initial-scale=1.0'>
+  <script src="i18n.js"></script>
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
@@ -17,6 +18,7 @@
       box-shadow: 0 4px 12px rgba(0,0,0,0.3);
       width: 100%; max-width: 320px;
       color: #f0f0f0;
+      position: relative;
     }
     h2 { margin: 0 0 1.5rem; text-align: center; color: #fff; font-size: 1.3rem; }
     .field { margin-bottom: 1rem; }
@@ -51,45 +53,49 @@
     }
     .link-btn:hover { color: #90c8ff; }
     .footer-row { text-align: center; margin-top: 0.75rem; }
-
-    /* Guest user picker */
     .user-pick-list { display: flex; flex-direction: column; gap: 0.5rem; margin: 0.75rem 0; }
     .user-pick-btn {
       background: #2c2c2c; color: #f0f0f0; border: 1px solid #555;
       border-radius: 4px; padding: 0.6rem 1rem; cursor: pointer;
-      text-align: left; font-size: 0.95rem;
-      transition: background 0.15s;
+      text-align: left; font-size: 0.95rem; transition: background 0.15s;
     }
     .user-pick-btn:hover { background: #3a3a3a; border-color: #888; }
     .view-hint { font-size: 0.78rem; color: #999; text-align: center; margin-bottom: 0.5rem; }
-
     .hidden { display: none; }
+    .lang-toggle {
+      position: absolute; top: .6rem; right: .6rem;
+      background: transparent; border: 1px solid #666;
+      color: #aaa; border-radius: 4px; padding: .15rem .45rem;
+      font-size: .72rem; font-weight: 600; cursor: pointer; line-height: 1.4;
+    }
+    .lang-toggle:hover { background: #444; color: #fff; border-color: #888; }
   </style>
 </head>
 <body>
   <div class='box'>
-    <h2>Campus Dashboard</h2>
+    <button class='lang-toggle' onclick='toggleLang()'></button>
+    <h2 data-i18n='app.title'>Campus Dashboard</h2>
 
     <!-- Login view -->
     <div id='view-login'>
       <form id='loginForm'>
         <div class='field'>
-          <label>Kullanıcı adı</label>
+          <label data-i18n='login.username'>Kullanıcı adı</label>
           <input type='text' id='username' autocomplete='username' required>
         </div>
         <div class='field'>
-          <label>Şifre</label>
+          <label data-i18n='login.password'>Şifre</label>
           <input type='password' id='password' autocomplete='current-password' required>
         </div>
         <div class='buttons'>
-          <button type='submit' class='btn-primary'>Giriş Yap</button>
-          <button type='button' class='btn-guest' id='guestBtn'>Misafir Olarak Gir</button>
+          <button type='submit' class='btn-primary' data-i18n='login.submit'>Giriş Yap</button>
+          <button type='button' class='btn-guest' id='guestBtn' data-i18n='login.guest_btn'>Misafir Olarak Gir</button>
         </div>
       </form>
       <p class='error' id='login-error'></p>
-      <div class='divider'>veya</div>
+      <div class='divider'><span data-i18n='login.or'>veya</span></div>
       <div class='footer-row'>
-        <button class='link-btn' onclick="showView('register')">Hesap Oluştur</button>
+        <button class='link-btn' onclick="showView('register')" data-i18n='login.create_acct'>Hesap Oluştur</button>
       </div>
     </div>
 
@@ -97,36 +103,40 @@
     <div id='view-register' class='hidden'>
       <form id='registerForm'>
         <div class='field'>
-          <label>Kullanıcı adı <span style='color:#888;font-weight:400'>(3-20 karakter, a-z 0-9 _)</span></label>
+          <label>
+            <span data-i18n='login.username'>Kullanıcı adı</span>
+            <span style='color:#888;font-weight:400' data-i18n='login.reg_user_hint'>(3-20 karakter, a-z 0-9 _)</span>
+          </label>
           <input type='text' id='reg-username' autocomplete='username' required pattern='[a-z0-9_]{3,20}'>
         </div>
         <div class='field'>
-          <label>Şifre <span style='color:#888;font-weight:400'>(en az 6 karakter)</span></label>
+          <label>
+            <span data-i18n='login.password'>Şifre</span>
+            <span style='color:#888;font-weight:400' data-i18n='login.reg_pw_hint'>(en az 6 karakter)</span>
+          </label>
           <input type='password' id='reg-password' autocomplete='new-password' required minlength='6'>
         </div>
         <div class='field'>
-          <label>Şifre tekrar</label>
+          <label data-i18n='login.reg_pw2'>Şifre tekrar</label>
           <input type='password' id='reg-password2' autocomplete='new-password' required>
         </div>
         <div class='buttons'>
-          <button type='submit' class='btn-primary'>Kayıt Ol</button>
+          <button type='submit' class='btn-primary' data-i18n='login.reg_submit'>Kayıt Ol</button>
         </div>
       </form>
       <p class='error' id='register-error'></p>
       <div class='footer-row' style='margin-top:.75rem'>
-        <button class='link-btn' onclick="showView('login')">← Giriş ekranına dön</button>
+        <button class='link-btn' onclick="showView('login')" data-i18n='login.reg_back'>← Giriş ekranına dön</button>
       </div>
     </div>
 
     <!-- Guest picker view -->
     <div id='view-guest' class='hidden'>
-      <p class='view-hint'>Hangi kullanıcının panosunu görüntülemek istiyorsunuz?</p>
-      <div class='user-pick-list' id='user-pick-list'>
-        <div style='color:#888;text-align:center;font-size:.9rem'>Yükleniyor...</div>
-      </div>
+      <p class='view-hint' data-i18n='login.guest_hint'>Hangi kullanıcının panosunu görüntülemek istiyorsunuz?</p>
+      <div class='user-pick-list' id='user-pick-list'></div>
       <p class='error' id='guest-error'></p>
       <div class='footer-row'>
-        <button class='link-btn' onclick="showView('login')">← Geri</button>
+        <button class='link-btn' onclick="showView('login')" data-i18n='login.guest_back'>← Geri</button>
       </div>
     </div>
 
@@ -137,7 +147,6 @@
       ['login','register','guest'].forEach(v => {
         document.getElementById('view-' + v).classList.toggle('hidden', v !== name);
       });
-      // Clear errors
       document.querySelectorAll('.error').forEach(e => { e.style.display = 'none'; e.textContent = ''; });
     }
 
@@ -147,51 +156,47 @@
       el.style.display = 'block';
     }
 
-    // Login
     document.getElementById('loginForm').onsubmit = async (e) => {
       e.preventDefault();
       const username = document.getElementById('username').value.trim();
       const password = document.getElementById('password').value;
       try {
         const res = await fetch('/auth/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ username, password })
         });
         if (res.ok) { window.location.href = '/'; return; }
         const data = await res.json();
-        showError('login-error', data.error || 'Giriş başarısız');
-      } catch { showError('login-error', 'Bağlantı hatası'); }
+        showError('login-error', data.error || t('login.err.generic'));
+      } catch { showError('login-error', t('login.err.conn')); }
     };
 
-    // Register
     document.getElementById('registerForm').onsubmit = async (e) => {
       e.preventDefault();
       const username = document.getElementById('reg-username').value.trim().toLowerCase();
       const password = document.getElementById('reg-password').value;
       const password2 = document.getElementById('reg-password2').value;
-      if (password !== password2) { showError('register-error', 'Şifreler eşleşmiyor'); return; }
+      if (password !== password2) { showError('register-error', t('login.reg.mismatch')); return; }
       try {
         const res = await fetch('/auth/register', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ username, password })
         });
         if (res.ok) { window.location.href = '/'; return; }
         const data = await res.json();
-        showError('register-error', data.error || 'Kayıt başarısız');
-      } catch { showError('register-error', 'Bağlantı hatası'); }
+        showError('register-error', data.error || t('login.reg.err'));
+      } catch { showError('register-error', t('login.reg.conn')); }
     };
 
-    // Guest: show user picker
     document.getElementById('guestBtn').onclick = async () => {
       showView('guest');
       const listEl = document.getElementById('user-pick-list');
+      listEl.innerHTML = `<div style="color:#888;text-align:center;font-size:.9rem">${t('login.guest_loading')}</div>`;
       try {
         const res = await fetch('/api/users');
         const users = await res.json();
         if (!users.length) {
-          listEl.innerHTML = '<div style="color:#888;text-align:center;font-size:.9rem">Henüz kullanıcı yok</div>';
+          listEl.innerHTML = `<div style="color:#888;text-align:center;font-size:.9rem">${t('login.guest_none')}</div>`;
           return;
         }
         listEl.innerHTML = '';
@@ -203,21 +208,20 @@
           listEl.appendChild(btn);
         }
       } catch {
-        listEl.innerHTML = '<div style="color:#ff6b6b;text-align:center">Kullanıcılar yüklenemedi</div>';
+        listEl.innerHTML = `<div style="color:#ff6b6b;text-align:center">${t('login.guest_err')}</div>`;
       }
     };
 
     async function loginAsGuest(viewUser) {
       try {
         const res = await fetch('/auth/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ guest: true, viewUser })
         });
         if (res.ok) { window.location.href = '/'; return; }
         const data = await res.json();
-        showError('guest-error', data.error || 'Giriş başarısız');
-      } catch { showError('guest-error', 'Bağlantı hatası'); }
+        showError('guest-error', data.error || t('login.guest.err'));
+      } catch { showError('guest-error', t('login.guest.conn')); }
     }
   </script>
 </body>

@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Dashboard</title>
   <link rel="stylesheet" href="style.css" />
+  <script src="i18n.js"></script>
 </head>
 <body>
 
@@ -15,10 +16,11 @@
     <div class="header-right">
       <div id="clock" class="clock"></div>
       <span id="user-badge" style="font-size:.8rem;opacity:.7;padding:0 .25rem"></span>
+      <button class="icon-btn lang-toggle" onclick="toggleLang()" title="Switch language"></button>
       <button id="theme-toggle" class="icon-btn" title="Toggle dark mode">☾</button>
-      <a id="edit-link" href="/edit" class="icon-btn" title="Edit dashboard">✎</a>
-      <a id="account-link" href="/account" class="icon-btn" title="Account">👤</a>
-      <a href="/auth/logout" class="icon-btn" title="Logout">⏻</a>
+      <a id="edit-link" href="/edit" class="icon-btn" data-i18n-title="nav.edit" title="Edit dashboard">✎</a>
+      <a id="account-link" href="/account" class="icon-btn" data-i18n-title="nav.account" title="Account">👤</a>
+      <a href="/auth/logout" class="icon-btn" data-i18n-title="nav.logout" title="Logout">⏻</a>
     </div>
   </header>
 
@@ -52,7 +54,7 @@
         const accountLink = document.getElementById('account-link');
 
         if (me.mode === 'guest') {
-          badge.textContent = `Misafir · ${me.guestViewUser}`;
+          badge.textContent = `${t('nav.guest_label')} · ${me.guestViewUser}`;
           editLink.style.display = 'none';
           accountLink.style.display = 'none';
         } else {

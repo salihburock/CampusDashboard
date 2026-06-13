@@ -63,6 +63,16 @@ function ensureUserDirs(username) {
 // Ensure dirs for all existing users on startup
 for (const u of loadUsers()) ensureUserDirs(u.username);
 
+// Ensure every user has a share token
+(function ensureShareTokens() {
+  const users = loadUsers();
+  let dirty = false;
+  for (const u of users) {
+    if (!u.shareToken) { u.shareToken = crypto.randomBytes(6).toString('hex'); dirty = true; }
+  }
+  if (dirty) saveUsers(users);
+})();
+
 // ── Session setup ─────────────────────────────────────────────
 app.use(cookieParser());
 app.use(session({
@@ -78,7 +88,7 @@ app.use(express.urlencoded({ extended: true }));
 // ── Auth Middleware ───────────────────────────────────────────
 const publicPaths = ['/login.html', '/auth/login', '/auth/register', '/api/users'];
 app.use((req, res, next) => {
-  if (publicPaths.includes(req.path)) return next();
+  if (publicPaths.includes(req.path) || req.path.startsWith('/d/')) return next();
   if (req.session && req.session.user) return next();
   if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Not authenticated' });
   res.redirect('/login.html');
@@ -475,9 +485,36 @@ app.get('/auth/me', (req, res) => {
   });
 });
 
-// ── Public user list (for guest picker) ───────────────────────
+// ── Share-token route (no auth required) ──────────────────────
+app.get('/d/:token', (req, res) => {
+  const user = loadUsers().find(u => u.shareToken === req.params.token);
+  if (!user) return res.redirect('/login.html');
+  req.session.user = 'guest';
+  req.session.mode = 'guest';
+  req.session.guestViewUser = user.username;
+  req.session.guestViaLink = true;
+  req.session.save(() => res.redirect('/'));
+});
+
+app.get('/api/share-info', (req, res) => {
+  if (!req.session || req.session.mode === 'guest') return res.status(403).json({ error: 'Forbidden' });
+  const user = loadUsers().find(u => u.username === req.session.user);
+  if (!user) return res.status(404).json({ error: 'Not found' });
+  const proto = req.headers['x-forwarded-proto'] || req.protocol;
+  res.json({ token: user.shareToken, url: `${proto}://${req.get('host')}/d/${user.shareToken}` });
+});
+
+// ── Public user list — only users with ≥1 public section ──────
 app.get('/api/users', (req, res) => {
-  res.json(loadUsers().map(u => u.username));
+  const listed = loadUsers().filter(u => {
+    try {
+      const f = path.join(__dirname, 'userdata', u.username, 'data.json');
+      if (!fs.existsSync(f)) return false;
+      const data = JSON.parse(fs.readFileSync(f, 'utf8'));
+      return (data.sections || []).some(s => (s.visibility || (s.public ? 'public' : 'private')) === 'public');
+    } catch { return false; }
+  });
+  res.json(listed.map(u => u.username));
 });
 
 // ── API Routes ────────────────────────────────────────────────
@@ -485,7 +522,11 @@ app.get('/api/data', (req, res) => {
   try {
     const data = JSON.parse(fs.readFileSync(req.paths.DATA_FILE, 'utf8'));
     if (req.session.mode === 'guest') {
-      data.sections = (data.sections || []).filter(s => s.public === true);
+      const viaLink = req.session.guestViaLink === true;
+      data.sections = (data.sections || []).filter(s => {
+        const vis = s.visibility || (s.public ? 'public' : 'private');
+        return vis === 'public' || (viaLink && vis === 'unlisted');
+      });
     }
     res.json(data);
   } catch { res.status(500).json({ error: 'Could not read data file' }); }

@@ -15,10 +15,10 @@ function urgencyClass(days) {
 }
 
 function deadlineLabel(days) {
-  if (days < 0)   return `${Math.abs(days)}d overdue`;
-  if (days === 0) return "Due today";
-  if (days === 1) return "Due tomorrow";
-  return `Due in ${days}d`;
+  if (days < 0)   return t('app.overdue', { n: Math.abs(days) });
+  if (days === 0) return t('app.due_today');
+  if (days === 1) return t('app.due_tmrw');
+  return t('app.due_in', { n: days });
 }
 
 function formatDate(dateStr) {
@@ -58,14 +58,14 @@ function renderCourseCard(course, openPdf) {
 
   const hdrRight = el("div", "course-hdr-right");
   if (course.credits) hdrRight.appendChild(el("span", "tag", course.credits + " cr"));
-  if (course.syllabus) hdrRight.appendChild(pdfBtn(course.syllabus, `${course.code || course.name} — Syllabus`, openPdf, "📄 Syllabus"));
+  if (course.syllabus) hdrRight.appendChild(pdfBtn(course.syllabus, `${course.code || course.name} — ${t('app.syllabus')}`, openPdf, `📄 ${t('app.syllabus')}`));
   hdr.appendChild(hdrRight);
   card.appendChild(hdr);
 
   // ── Homework ──────────────────────────────────────────────
   if (course.homework && course.homework.length) {
     const sub = el("div", "course-sub");
-    sub.appendChild(el("div", "course-sub-label", "📚 Homework"));
+    sub.appendChild(el("div", "course-sub-label", t('app.homework')));
     for (const hw of course.homework) {
       const days = daysUntil(hw.deadline);
       const urg  = urgencyClass(days);
@@ -91,7 +91,7 @@ function renderCourseCard(course, openPdf) {
   // ── Exams ─────────────────────────────────────────────────
   if (course.exams && course.exams.length) {
     const sub = el("div", "course-sub");
-    sub.appendChild(el("div", "course-sub-label", "📝 Exams"));
+    sub.appendChild(el("div", "course-sub-label", t('app.exams')));
     for (const ex of course.exams) {
       const days = ex.date ? daysUntil(ex.date) : null;
       const row  = el("div", "course-row");
@@ -101,7 +101,7 @@ function renderCourseCard(course, openPdf) {
       if (ex.type) titleRow.appendChild(el("span", "exam-badge", ex.type));
       if (ex.date) {
         const cd = el("span", `course-countdown${days < 0 ? " past" : ""}`,
-          days < 0 ? `${Math.abs(days)}d ago` : days === 0 ? "Today!" : `in ${days}d`
+          days < 0 ? t('app.ago', { n: Math.abs(days) }) : days === 0 ? t('app.today') : t('app.in_days', { n: days })
         );
         titleRow.appendChild(cd);
         titleRow.appendChild(el("span", "course-row-sub", " · " + formatDate(ex.date)));
@@ -123,7 +123,7 @@ function renderCourseCard(course, openPdf) {
   // ── Slides ────────────────────────────────────────────────
   if (course.slides && course.slides.length) {
     const sub = el("div", "course-sub");
-    sub.appendChild(el("div", "course-sub-label", "🎞 Slides"));
+    sub.appendChild(el("div", "course-sub-label", t('app.slides')));
     for (const sl of course.slides) {
       const row = el("div", "course-row");
       const info = el("div", "course-row-info");
@@ -144,7 +144,7 @@ function renderCourseCard(course, openPdf) {
   // ── Resources ─────────────────────────────────────────────
   if (course.resources && course.resources.length) {
     const sub = el("div", "course-sub");
-    sub.appendChild(el("div", "course-sub-label", "📎 Resources"));
+    sub.appendChild(el("div", "course-sub-label", t('app.resources')));
     for (const rc of course.resources) {
       const row = el("div", "course-row");
       const info = el("div", "course-row-info");
@@ -176,7 +176,7 @@ function renderDayCard(item) {
   const card = el("div", "card");
   card.appendChild(el("div", "card-title", item.name));
   const countEl = el("div", `days-countdown${days < 0 ? " past" : ""}`,
-    days < 0 ? `${Math.abs(days)}d ago` : days === 0 ? "Today!" : String(days)
+    days < 0 ? t('app.ago', { n: Math.abs(days) }) : days === 0 ? t('app.today') : String(days)
   );
   card.appendChild(countEl);
   const sub = days !== 0

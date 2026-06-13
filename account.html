@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Account - Campus Dashboard</title>
+  <script src="i18n.js"></script>
   <link rel="stylesheet" href="style.css" />
   <style>
     .account-container {
@@ -29,11 +30,6 @@
       font-size: 1.4rem;
       font-weight: 700;
       color: var(--text, #1c1e21);
-    }
-    .joined-date {
-      font-size: .85rem;
-      color: var(--muted, #888);
-      margin-top: .25rem;
     }
     .field { margin-bottom: 1rem; }
     .field label {
@@ -94,16 +90,51 @@
       cursor: pointer;
     }
     .btn-logout:hover { background: var(--danger, #c0392b); color: #fff; }
+    /* Share link card */
+    .share-hint {
+      font-size: .82rem;
+      color: var(--muted, #888);
+      margin: 0 0 .75rem;
+    }
+    .share-row {
+      display: flex;
+      gap: .5rem;
+      align-items: center;
+    }
+    .share-input {
+      flex: 1;
+      padding: .5rem .6rem;
+      border: 1px solid var(--border, #ddd);
+      border-radius: 4px;
+      font-size: .78rem;
+      background: var(--bg, #f8f8f8);
+      color: var(--muted, #555);
+      min-width: 0;
+    }
+    .btn-copy {
+      padding: .5rem .85rem;
+      background: #1877f2;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      font-size: .85rem;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .btn-copy:hover { opacity: .85; }
   </style>
 </head>
 <body>
 
   <header class="site-header">
     <div class="header-left">
-      <h1>Account</h1>
+      <h1 data-i18n="acct.title">Account</h1>
     </div>
     <div class="header-right">
-      <a href="/" class="icon-btn" title="Dashboard">← Dashboard</a>
+      <a href="/" class="icon-btn" data-i18n-title="acct.back" title="← Dashboard">← Dashboard</a>
+      <button class="icon-btn lang-toggle" onclick="toggleLang()" title="Switch language"></button>
       <button id="theme-toggle" class="icon-btn" title="Toggle dark mode">☾</button>
     </div>
   </header>
@@ -111,39 +142,49 @@
   <div class="account-container">
 
     <div class="account-card">
-      <h2>Profile</h2>
+      <h2 data-i18n="acct.profile">Profile</h2>
       <div class="username-display" id="display-username">—</div>
-      <div class="joined-date" id="display-joined"></div>
+    </div>
+
+    <div class="account-card" id="share-card" style="display:none">
+      <h2 data-i18n="acct.share_title">Share Link</h2>
+      <p class="share-hint" data-i18n="acct.share_hint">Visitors with this link can also see your unlisted sections.</p>
+      <div class="share-row">
+        <input type="text" id="share-url" class="share-input" readonly>
+        <button id="copy-btn" class="btn-copy" onclick="copyLink()" data-i18n="acct.copy">Copy</button>
+      </div>
     </div>
 
     <div class="account-card">
-      <h2>Change Password</h2>
+      <h2 data-i18n="acct.change_pw">Change Password</h2>
       <form id="pw-form">
         <div class="field">
-          <label>Current password</label>
+          <label data-i18n="acct.cur_pw">Current password</label>
           <input type="password" id="cur-pw" autocomplete="current-password" required>
         </div>
         <div class="field">
-          <label>New password <span style="font-weight:400;color:var(--muted)">(min 6 chars)</span></label>
+          <label>
+            <span data-i18n="acct.new_pw">New password</span>
+            <span style="font-weight:400;color:var(--muted)" data-i18n="acct.new_pw_hint">(min 6 chars)</span>
+          </label>
           <input type="password" id="new-pw" autocomplete="new-password" required minlength="6">
         </div>
         <div class="field">
-          <label>Confirm new password</label>
+          <label data-i18n="acct.confirm_pw">Confirm new password</label>
           <input type="password" id="new-pw2" autocomplete="new-password" required>
         </div>
-        <button type="submit" class="btn-save" id="save-btn">Save Password</button>
+        <button type="submit" class="btn-save" id="save-btn" data-i18n="acct.save_pw">Save Password</button>
         <div class="msg" id="pw-msg"></div>
       </form>
     </div>
 
     <div class="account-card">
-      <a href="/auth/logout" class="btn-logout" style="display:block;text-align:center;text-decoration:none">Logout</a>
+      <a href="/auth/logout" class="btn-logout" style="display:block;text-align:center;text-decoration:none" data-i18n="acct.logout">Logout</a>
     </div>
 
   </div>
 
   <script>
-    // Theme
     (function() {
       const btn = document.getElementById('theme-toggle');
       const saved = localStorage.getItem('theme');
@@ -158,14 +199,32 @@
       btn.addEventListener('click', () => apply(document.documentElement.getAttribute('data-theme') !== 'dark'));
     })();
 
-    // Load user info
     (async () => {
       const res = await fetch('/auth/me');
       const me = await res.json();
       document.getElementById('display-username').textContent = me.username;
     })();
 
-    // Change password
+    (async () => {
+      try {
+        const res = await fetch('/api/share-info');
+        if (!res.ok) return;
+        const data = await res.json();
+        document.getElementById('share-url').value = data.url;
+        document.getElementById('share-card').style.display = '';
+      } catch {}
+    })();
+
+    function copyLink() {
+      const url = document.getElementById('share-url').value;
+      navigator.clipboard.writeText(url).then(() => {
+        const btn = document.getElementById('copy-btn');
+        const orig = btn.textContent;
+        btn.textContent = t('acct.copied');
+        setTimeout(() => { btn.textContent = t('acct.copy'); }, 2000);
+      });
+    }
+
     document.getElementById('pw-form').onsubmit = async (e) => {
       e.preventDefault();
       const msgEl = document.getElementById('pw-msg');
@@ -173,7 +232,7 @@
       const newPw2 = document.getElementById('new-pw2').value;
 
       if (newPw !== newPw2) {
-        msgEl.textContent = 'Passwords do not match';
+        msgEl.textContent = t('acct.pw_mismatch');
         msgEl.className = 'msg err';
         msgEl.style.display = 'block';
         return;
@@ -181,7 +240,7 @@
 
       const btn = document.getElementById('save-btn');
       btn.disabled = true;
-      btn.textContent = 'Saving...';
+      btn.textContent = t('acct.saving');
 
       try {
         const res = await fetch('/auth/change-password', {
@@ -194,20 +253,21 @@
         });
         const data = await res.json();
         if (res.ok) {
-          msgEl.textContent = 'Password changed successfully';
+          msgEl.textContent = t('acct.pw_ok');
           msgEl.className = 'msg ok';
           document.getElementById('pw-form').reset();
         } else {
-          msgEl.textContent = data.error || 'Failed to change password';
+          const key = data.error && data.error.toLowerCase().includes('incorrect') ? 'acct.pw_wrong' : 'acct.pw_fail';
+          msgEl.textContent = data.error || t(key);
           msgEl.className = 'msg err';
         }
       } catch {
-        msgEl.textContent = 'Connection error';
+        msgEl.textContent = t('acct.pw_fail');
         msgEl.className = 'msg err';
       } finally {
         msgEl.style.display = 'block';
         btn.disabled = false;
-        btn.textContent = 'Save Password';
+        btn.textContent = t('acct.save_pw');
       }
     };
   </script>

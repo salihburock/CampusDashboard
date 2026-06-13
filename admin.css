@@ -64,11 +64,13 @@
   transition: opacity .15s;
 }
 .btn-visibility:hover { opacity: .8; }
-.btn-visibility.is-public  { background: #d4edda; color: #155724; border-color: #b8dfc4; }
-.btn-visibility.is-private { background: #f8f9fa; color: #6c757d; border-color: #ced4da; }
+.btn-visibility.is-public    { background: #d4edda; color: #155724; border-color: #b8dfc4; }
+.btn-visibility.is-unlisted  { background: #fff3cd; color: #856404; border-color: #ffeaa0; }
+.btn-visibility.is-private   { background: #f8f9fa; color: #6c757d; border-color: #ced4da; }
 
-[data-theme="dark"] .btn-visibility.is-public  { background: #1a3a25; color: #6fcf97; border-color: #2d6a42; }
-[data-theme="dark"] .btn-visibility.is-private { background: #2a2a2a; color: #aaa;    border-color: #555; }
+[data-theme="dark"] .btn-visibility.is-public    { background: #1a3a25; color: #6fcf97; border-color: #2d6a42; }
+[data-theme="dark"] .btn-visibility.is-unlisted  { background: #3a2e00; color: #ffd34e; border-color: #6e5800; }
+[data-theme="dark"] .btn-visibility.is-private   { background: #2a2a2a; color: #aaa;    border-color: #555; }
 
 .section-move-btns {
   display: flex;

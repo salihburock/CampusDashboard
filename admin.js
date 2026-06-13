@@ -30,13 +30,13 @@ async function loadData() {
     renderSections();
     renderPdfList();
   } catch {
-    showToast('Failed to load data', true);
+    showToast(t('adm.load_fail'), true);
   }
 }
 
 async function saveData() {
   const btn = document.getElementById('save-btn');
-  btn.disabled = true; btn.textContent = 'Saving…';
+  btn.disabled = true; btn.textContent = t('adm.saving');
   try {
     state.title = document.getElementById('dashboard-title').value;
     const res = await fetch('/api/data', {
@@ -45,9 +45,9 @@ async function saveData() {
       body: JSON.stringify(state)
     });
     if (!res.ok) throw new Error();
-    showToast('Saved!');
-  } catch { showToast('Save failed', true); }
-  finally { btn.disabled = false; btn.textContent = 'Save'; }
+    showToast(t('adm.save_ok'));
+  } catch { showToast(t('adm.save_fail'), true); }
+  finally { btn.disabled = false; btn.textContent = t('adm.save'); }
 }
 
 // ── PDF Management ────────────────────────────────────────────
@@ -216,12 +216,16 @@ function filePickerHtml(currentValue, onchangeExpr, uploadCall) {
 
 // ── Section Operations ────────────────────────────────────────
 function addSection() {
-  state.sections.push({ title: 'New Section', type: 'notes', collapsed: false, public: false, items: [] });
+  state.sections.push({ title: 'New Section', type: 'notes', collapsed: false, visibility: 'private', items: [] });
   renderSections();
 }
 
-function toggleSectionPublic(i) {
-  state.sections[i].public = !state.sections[i].public;
+function cycleSectionVisibility(i) {
+  const s = state.sections[i];
+  const cur = s.visibility || (s.public ? 'public' : 'private');
+  const next = { private: 'public', public: 'unlisted', unlisted: 'private' };
+  s.visibility = next[cur] || 'private';
+  delete s.public;
   renderSections();
 }
 
@@ -316,13 +320,22 @@ function deleteCourseResource(si, ii, ri) {
 function renderSections() {
   document.getElementById('sections-container').innerHTML = state.sections.length
     ? state.sections.map((s, i) => sectionHtml(s, i)).join('')
-    : '<p class="empty-msg">No sections yet. Add one below.</p>';
+    : `<p class="empty-msg">${t('adm.no_sections')}</p>`;
 }
 
+window.addEventListener('langchange', renderSections);
+
 function sectionHtml(section, i) {
+  const vis = section.visibility || (section.public ? 'public' : 'private');
+  const visConfig = {
+    public:   { label: t('vis.public'),   tip: t('vis.public.tip') },
+    unlisted: { label: t('vis.unlisted'), tip: t('vis.unlisted.tip') },
+    private:  { label: t('vis.private'),  tip: t('vis.private.tip') },
+  };
+
   const types = ['homework', 'days', 'documents', 'links', 'notes', 'courses'];
-  const typeOptions = types.map(t =>
-    `<option value="${t}" ${t === section.type ? 'selected' : ''}>${t}</option>`
+  const typeOptions = types.map(tp =>
+    `<option value="${tp}" ${tp === section.type ? 'selected' : ''}>${tp}</option>`
   ).join('');
 
   const itemsHtml = section.items.length
@@ -344,10 +357,10 @@ function sectionHtml(section, i) {
                  onchange="state.sections[${i}].collapsed = this.checked">
           Collapsed by default
         </label>
-        <button onclick="toggleSectionPublic(${i})"
-                class="btn-sm btn-visibility ${section.public ? 'is-public' : 'is-private'}"
-                title="${section.public ? 'Visible to guests — click to make private' : 'Hidden from guests — click to make public'}">
-          ${section.public ? '🌐 Public' : '🔒 Private'}
+        <button onclick="cycleSectionVisibility(${i})"
+                class="btn-sm btn-visibility is-${vis}"
+                title="${visConfig[vis].tip}">
+          ${visConfig[vis].label}
         </button>
         <div class="section-move-btns">
           <button onclick="moveSection(${i}, -1)" class="icon-btn"

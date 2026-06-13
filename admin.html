@@ -6,17 +6,19 @@
   <title>Edit Dashboard</title>
   <link rel="stylesheet" href="style.css" />
   <link rel="stylesheet" href="admin.css" />
+  <script src="i18n.js"></script>
 </head>
 <body>
 
   <header class="site-header">
     <div class="header-left">
-      <h1>Edit Dashboard</h1>
+      <h1 data-i18n="adm.title">Edit Dashboard</h1>
     </div>
     <div class="header-right">
-      <button id="save-btn" class="btn-primary" onclick="saveData()">Save</button>
-      <a href="/" class="icon-btn" title="Back to dashboard">← Dashboard</a>
-      <a href="/account" class="icon-btn" title="Account">👤</a>
+      <button id="save-btn" class="btn-primary" onclick="saveData()" data-i18n="adm.save">Save</button>
+      <a href="/" class="icon-btn" data-i18n-title="adm.back" title="← Dashboard">← Dashboard</a>
+      <a href="/account" class="icon-btn" data-i18n-title="nav.account" title="Account">👤</a>
+      <button class="icon-btn lang-toggle" onclick="toggleLang()" title="Switch language"></button>
       <button id="theme-toggle" class="icon-btn" title="Toggle dark mode">☾</button>
     </div>
   </header>
@@ -25,7 +27,7 @@
 
     <!-- Dashboard Title -->
     <div class="admin-card">
-      <label class="field-label" for="dashboard-title">Dashboard Title</label>
+      <label class="field-label" for="dashboard-title" data-i18n="adm.dash_title">Dashboard Title</label>
       <input id="dashboard-title" type="text" class="field-input"
              placeholder="e.g. My Dashboard"
              oninput="state.title = this.value">
@@ -34,16 +36,16 @@
     <!-- Sections -->
     <div class="admin-card">
       <div class="admin-card-header">
-        <h2>Sections</h2>
+        <h2 data-i18n="adm.sections">Sections</h2>
       </div>
       <div id="sections-container"></div>
-      <button onclick="addSection()" class="btn-secondary">+ Add Section</button>
+      <button onclick="addSection()" class="btn-secondary" data-i18n="adm.add_section">+ Add Section</button>
     </div>
 
     <!-- PDF / Document Library -->
     <div class="admin-card">
       <div class="admin-card-header">
-        <h2>Document Library</h2><label class="btn-secondary btn-sm" style="cursor:pointer" title="Upload a PDF document"><span style="font-size:1.2rem;vertical-align:middle;margin-right:2px">+</span> Upload PDF<input id="manual-pdf-upload" type="file" accept=".pdf" style="display:none" onchange="handleManualUpload(this)"></label>
+        <h2 data-i18n="adm.doc_lib">Document Library</h2><label class="btn-secondary btn-sm" style="cursor:pointer" title="Upload a PDF document"><span style="font-size:1.2rem;vertical-align:middle;margin-right:2px">+</span> Upload PDF<input id="manual-pdf-upload" type="file" accept=".pdf" style="display:none" onchange="handleManualUpload(this)"></label>
         <label class="btn-secondary btn-sm" style="cursor:pointer" title="Import a Moodle course ZIP archive">
           📦 Import Moodle ZIP
           <input id="moodle-zip-input" type="file" accept=".zip" style="display:none"
