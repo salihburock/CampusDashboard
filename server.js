@@ -131,7 +131,9 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ── Auth Middleware ───────────────────────────────────────────
-const publicPaths = ['/login.html', '/auth/login', '/auth/register', '/api/users'];
+// Note: /i18n.js must be public — login.html loads it while the visitor has no
+// session yet; without it window.t is undefined and the guest picker breaks.
+const publicPaths = ['/login.html', '/i18n.js', '/auth/login', '/auth/register', '/api/users'];
 app.use((req, res, next) => {
   if (publicPaths.includes(req.path) || req.path.startsWith('/d/')) return next();
   if (req.session && req.session.user) return next();
@@ -808,7 +810,16 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.static(__dirname));
+// Force browsers to revalidate HTML/JS/CSS on every load so deploys take effect
+// immediately instead of being masked by a stale cached copy.
+app.use(express.static(__dirname, {
+  etag: true,
+  setHeaders(res, filePath) {
+    if (/\.(html|js|css)$/i.test(filePath)) {
+      res.setHeader('Cache-Control', 'no-cache');
+    }
+  }
+}));
 
 app.listen(PORT, () => {
   console.log(`Dashboard:  http://localhost:${PORT}`);
