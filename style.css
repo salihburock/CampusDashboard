@@ -134,6 +134,15 @@ body {
   padding: .1rem .45rem;
 }
 
+.section-credits {
+  font-size: .72rem;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-dim);
+  border-radius: 999px;
+  padding: .1rem .5rem;
+}
+
 .section-chevron {
   color: var(--muted);
   font-size: .75rem;

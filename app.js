@@ -228,6 +228,15 @@ function renderSection(section, openPdf) {
   const icons = { courses: "🎓", days: "📅", documents: "📁", links: "🔗", notes: "📝" };
   titleEl.innerHTML = `${icons[section.type] || "▪"} ${section.title}`;
   titleEl.appendChild(el("span", "section-count", String(section.items.length)));
+  if (section.type === "courses") {
+    const totalCredits = section.items.reduce((sum, c) => {
+      const n = parseFloat(c.credits);
+      return sum + (isNaN(n) ? 0 : n);
+    }, 0);
+    if (totalCredits > 0) {
+      titleEl.appendChild(el("span", "section-credits", t("app.total_credits", { n: totalCredits })));
+    }
+  }
   hdr.appendChild(titleEl);
   hdr.appendChild(el("span", "section-chevron", "▾"));
   hdr.addEventListener("click", () => panel.classList.toggle("collapsed"));

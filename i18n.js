@@ -89,6 +89,7 @@ const _I18N = {
     'app.slides': '🎞 Slaytlar',
     'app.resources': '📎 Kaynaklar',
     'app.empty': 'Bu dönemde henüz içerik yok.',
+    'app.total_credits': 'Toplam {n} kredi',
     // semesters
     'sem.title': 'Dönemler',
     'sem.new': '+ Yeni Dönem',
@@ -204,6 +205,7 @@ const _I18N = {
     'app.slides': '🎞 Slides',
     'app.resources': '📎 Resources',
     'app.empty': 'No content in this semester yet.',
+    'app.total_credits': '{n} total credits',
     // semesters
     'sem.title': 'Semesters',
     'sem.new': '+ New Semester',
@@ -231,19 +233,38 @@ const _I18N = {
   }
 };
 
+// Display labels for the lang-toggle button, shown for whichever language
+// comes NEXT in the cycle. To add a language: add a block to _I18N above and
+// a short code here — everything else (detection, toggle, button) adapts.
+const _LANG_LABELS = {
+  tr: 'TR',
+  en: 'EN',
+};
+
 (function () {
+  // Cycle order follows the insertion order of _I18N (the translated blocks).
+  const ORDER = Object.keys(_I18N);
+  const FALLBACK = ORDER.includes('en') ? 'en' : ORDER[0];
+
   function detect() {
     const s = localStorage.getItem('lang');
-    if (s === 'tr' || s === 'en') return s;
-    return (navigator.language || 'tr').toLowerCase().startsWith('tr') ? 'tr' : 'en';
+    if (s && _I18N[s]) return s;
+    const nav = (navigator.language || '').toLowerCase().split('-')[0];
+    return _I18N[nav] ? nav : FALLBACK;
   }
 
   let _lang = detect();
 
   function t(key, vars) {
-    let str = (_I18N[_lang] && _I18N[_lang][key]) || (_I18N.en && _I18N.en[key]) || key;
-    if (vars) Object.keys(vars).forEach(k => { str = str.replace('{' + k + '}', vars[k]); });
+    let str = (_I18N[_lang] && _I18N[_lang][key]) ||
+              (_I18N[FALLBACK] && _I18N[FALLBACK][key]) || key;
+    if (vars) Object.keys(vars).forEach(k => { str = str.replaceAll('{' + k + '}', vars[k]); });
     return str;
+  }
+
+  function nextLang() {
+    const i = ORDER.indexOf(_lang);
+    return ORDER[(i + 1) % ORDER.length];
   }
 
   function apply() {
@@ -256,8 +277,9 @@ const _I18N = {
     document.querySelectorAll('[data-i18n-title]').forEach(el => {
       el.title = t(el.dataset.i18nTitle);
     });
+    const nxt = nextLang();
     document.querySelectorAll('.lang-toggle').forEach(btn => {
-      btn.textContent = _lang === 'tr' ? 'EN' : 'TR';
+      btn.textContent = _LANG_LABELS[nxt] || nxt.toUpperCase();
       btn.title = t('nav.lang');
     });
     document.documentElement.lang = _lang;
@@ -271,8 +293,9 @@ const _I18N = {
     apply();
     window.dispatchEvent(new CustomEvent('langchange'));
   };
-  window.toggleLang = function () { window.setLang(_lang === 'tr' ? 'en' : 'tr'); };
+  window.toggleLang = function () { window.setLang(nextLang()); };
   window.currentLang = function () { return _lang; };
+  window.availableLangs = function () { return ORDER.slice(); };
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', apply);
