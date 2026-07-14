@@ -2,6 +2,20 @@
 // Include on any page. Dispatches 'documentuploaded' on document when done.
 
 (function () {
+  // A reverse proxy that rejects an oversized body answers with an HTML error
+  // page, not JSON — parse defensively so the user sees the real reason.
+  window.readUploadResponse = async function (res) {
+    const raw = await res.text();
+    let data = null;
+    try { data = JSON.parse(raw); } catch {}
+    if (res.ok) {
+      if (data) return data;
+      throw new Error(`Unexpected response from server (HTTP ${res.status})`);
+    }
+    if (res.status === 413) throw new Error('File is too large to upload');
+    throw new Error((data && data.error) || `Upload failed (HTTP ${res.status})`);
+  };
+
   // ── Styles ──────────────────────────────────────────────────
   const css = document.createElement('style');
   css.textContent = `
@@ -185,8 +199,7 @@
     fd.append('file', file);
     try {
       const res = await fetch('/api/upload/stage', { method: 'POST', body: fd });
-      if (!res.ok) throw new Error((await res.json()).error);
-      const data = await res.json();
+      const data = await readUploadResponse(res);
       stagingId = data.id;
       confirmBtn.disabled = false;
       pollSuggestion(stagingId);

@@ -759,8 +759,7 @@ async function handleMoodleZipSelected(input) {
 
   try {
     const res  = await fetch('/api/upload/moodle-zip', { method: 'POST', body: fd });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Upload failed');
+    const data = await readUploadResponse(res);
 
     // Build flat index
     let idx = 0;
@@ -1008,9 +1007,8 @@ async function handleManualUpload(input) {
 
   try {
     const res = await fetch('/api/upload', { method: 'POST', body: fd });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Upload failed');
-    
+    await readUploadResponse(res);
+
     showToast('Uploaded successfully!');
     await loadPdfs(); // Refresh the list
   } catch (e) {
