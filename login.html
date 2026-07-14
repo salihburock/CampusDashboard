@@ -201,10 +201,13 @@
         }
         listEl.innerHTML = '';
         for (const u of users) {
+          // Tolerate the older plain-string shape in case a cached page hits a new server
+          const username    = typeof u === 'string' ? u : u.username;
+          const displayName = typeof u === 'string' ? u : (u.displayName || u.username);
           const btn = document.createElement('button');
           btn.className = 'user-pick-btn';
-          btn.textContent = u;
-          btn.onclick = () => loginAsGuest(u);
+          btn.textContent = displayName;
+          btn.onclick = () => loginAsGuest(username);
           listEl.appendChild(btn);
         }
       } catch {

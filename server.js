@@ -108,15 +108,21 @@ function loadActiveData(owner) {
 // Ensure dirs for all existing users on startup
 for (const u of loadUsers()) { ensureUserDirs(u.username); ensureSemesters(u.username); }
 
-// Ensure every user has a share token
-(function ensureShareTokens() {
+// Ensure every user has a share token and a display name
+(function ensureUserFields() {
   const users = loadUsers();
   let dirty = false;
   for (const u of users) {
     if (!u.shareToken) { u.shareToken = crypto.randomBytes(6).toString('hex'); dirty = true; }
+    if (!u.displayName) { u.displayName = u.username; dirty = true; }
   }
   if (dirty) saveUsers(users);
 })();
+
+// What guests see instead of the raw username
+function displayNameOf(user) {
+  return (user && user.displayName) || (user && user.username) || '';
+}
 
 // ── Session setup ─────────────────────────────────────────────
 app.use(cookieParser());
@@ -506,6 +512,7 @@ app.post('/auth/register', (req, res) => {
 
   users.push({
     username,
+    displayName: username,
     passwordHash: bcrypt.hashSync(password, 10),
     shareToken: crypto.randomBytes(6).toString('hex'),
     createdAt: new Date().toISOString()
@@ -542,11 +549,28 @@ app.get('/auth/logout', (req, res) => {
 
 app.get('/auth/me', (req, res) => {
   if (!req.session || !req.session.user) return res.status(401).json({ error: 'Not authenticated' });
+  const viewing = req.session.guestViewUser || null;
   res.json({
     username:      req.session.user,
+    displayName:   displayNameOf(findUser(req.session.user)),
     mode:          req.session.mode,
-    guestViewUser: req.session.guestViewUser || null
+    guestViewUser: viewing,
+    guestViewName: viewing ? displayNameOf(findUser(viewing)) : null
   });
+});
+
+app.post('/auth/display-name', (req, res) => {
+  if (!req.session || req.session.mode === 'guest') return res.status(403).json({ error: 'Forbidden' });
+  const name = String(req.body.displayName || '').trim();
+  if (!name) return res.status(400).json({ error: 'Display name required' });
+  if (name.length > 40) return res.status(400).json({ error: 'Display name must be 40 characters or fewer' });
+
+  const users = loadUsers();
+  const user = users.find(u => u.username === req.session.user);
+  if (!user) return res.status(404).json({ error: 'Not found' });
+  user.displayName = name;
+  saveUsers(users);
+  res.json({ ok: true, displayName: name });
 });
 
 // ── Share-token route (no auth required) ──────────────────────
@@ -569,6 +593,8 @@ app.get('/api/share-info', (req, res) => {
 });
 
 // ── Public user list — only users with ≥1 public section ──────
+// Returns { username, displayName }: the username is still needed to start the
+// guest session, but the picker shows the display name.
 app.get('/api/users', (req, res) => {
   const listed = loadUsers().filter(u => {
     try {
@@ -576,7 +602,7 @@ app.get('/api/users', (req, res) => {
       return (data.sections || []).some(s => (s.visibility || (s.public ? 'public' : 'private')) === 'public');
     } catch { return false; }
   });
-  res.json(listed.map(u => u.username));
+  res.json(listed.map(u => ({ username: u.username, displayName: displayNameOf(u) })));
 });
 
 // ── API Routes ────────────────────────────────────────────────

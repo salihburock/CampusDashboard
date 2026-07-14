@@ -158,6 +158,17 @@
     <div class="account-card">
       <h2 data-i18n="acct.profile">Profile</h2>
       <div class="username-display" id="display-username">—</div>
+      <form id="name-form" style="margin-top:1.25rem">
+        <div class="field">
+          <label>
+            <span data-i18n="acct.display_name">Display name</span>
+            <span style="font-weight:400;color:var(--muted)" data-i18n="acct.display_name_hint">(shown to guests instead of your username)</span>
+          </label>
+          <input type="text" id="display-name" maxlength="40" required>
+        </div>
+        <button type="submit" class="btn-save" id="name-btn" data-i18n="acct.save_name">Save Display Name</button>
+        <div class="msg" id="name-msg"></div>
+      </form>
     </div>
 
     <div class="account-card" id="share-card" style="display:none">
@@ -217,7 +228,38 @@
       const res = await fetch('/auth/me');
       const me = await res.json();
       document.getElementById('display-username').textContent = me.username;
+      document.getElementById('display-name').value = me.displayName || me.username;
     })();
+
+    document.getElementById('name-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const msgEl = document.getElementById('name-msg');
+      const btn = document.getElementById('name-btn');
+      btn.disabled = true;
+      btn.textContent = t('acct.saving');
+      try {
+        const res = await fetch('/auth/display-name', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ displayName: document.getElementById('display-name').value })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          msgEl.textContent = t('acct.name_ok');
+          msgEl.className = 'msg ok';
+        } else {
+          msgEl.textContent = data.error || t('acct.name_fail');
+          msgEl.className = 'msg err';
+        }
+      } catch {
+        msgEl.textContent = t('acct.name_fail');
+        msgEl.className = 'msg err';
+      } finally {
+        msgEl.style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = t('acct.save_name');
+      }
+    };
 
     (async () => {
       try {
