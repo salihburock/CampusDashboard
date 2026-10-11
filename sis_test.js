@@ -1,0 +1,21 @@
+const { chromium } = require('playwright');
+(async () => {
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.goto('https://sis.ozyegin.edu.tr/OZU_GWT/WEB/CourseCatalogOfferUI?locale=tr', { timeout: 60000, waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(4000);
+  await page.screenshot({ path: '/tmp/sis0.png', fullPage: true });
+  await page.getByText('Detaylı Arama').click();
+  const dropdownArrow = page.locator('.comboBoxItemPicker').first();
+  await dropdownArrow.waitFor();
+  await dropdownArrow.click();
+  await page.getByText('Lisans', { exact: true }).locator('visible=true').last().click();
+  await page.locator('input[name="CREDITS_"]').fill('0');
+  await page.locator('input[name="SEARCHSET"]').first().fill('CS 321');
+  await page.getByText('Arama', { exact: true }).last().click();
+  await page.waitForTimeout(3000);
+  await page.screenshot({ path: '/tmp/sis1.png', fullPage: true });
+  console.log('done');
+  await browser.close();
+})().catch(e => { console.error(e); process.exit(1); });
