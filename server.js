@@ -10,6 +10,14 @@ const session      = require('express-session');
 const cookieParser = require('cookie-parser');
 const bcrypt       = require('bcryptjs');
 
+// Load settings from .env (see .env.example)
+try { process.loadEnvFile(path.join(__dirname, '.env')); } catch {}
+
+if (!process.env.SESSION_SECRET) {
+  console.error('SESSION_SECRET is not set. Copy .env.example to .env and fill it in.');
+  process.exit(1);
+}
+
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
@@ -29,7 +37,7 @@ function findUser(username) {
 
 // Bootstrap: create default user on first run
 if (!fs.existsSync(USERS_FILE)) {
-  const defaultPassword = crypto.randomBytes(8).toString('hex');
+  const defaultPassword = process.env.ADMIN_PASSWORD || crypto.randomBytes(8).toString('hex');
   saveUsers([{
     username: 'admin',
     passwordHash: bcrypt.hashSync(defaultPassword, 10),
@@ -127,7 +135,7 @@ function displayNameOf(user) {
 // ── Session setup ─────────────────────────────────────────────
 app.use(cookieParser());
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'REDACTED',
+  secret: process.env.SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
   cookie: { maxAge: 24 * 60 * 60 * 1000 }
