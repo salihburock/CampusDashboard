@@ -62,6 +62,29 @@ function renderCourseCard(course, openPdf) {
   hdr.appendChild(hdrRight);
   card.appendChild(hdr);
 
+  // ── Grades ────────────────────────────────────────────────
+  if (course.grades && course.grades.length) {
+    const sub = el("div", "course-sub");
+    sub.appendChild(el("div", "course-sub-label", t('app.grades')));
+    for (const g of course.grades) {
+      const row = el("div", "course-row");
+
+      const info = el("div", "course-row-info");
+      info.appendChild(el("span", "course-row-title", g.item));
+      if (g.feedback) info.appendChild(el("span", "course-row-sub", g.feedback));
+
+      const actions = el("div", "course-row-actions");
+      if (g.grade) actions.appendChild(el("span", "tag accent", g.range ? `${g.grade} / ${g.range}` : g.grade));
+      if (g.percentage && g.percentage !== "-") actions.appendChild(el("span", "tag", g.percentage));
+      if (g.weight && g.weight !== "-") actions.appendChild(el("span", "tag", `w: ${g.weight}`));
+
+      row.appendChild(info);
+      row.appendChild(actions);
+      sub.appendChild(row);
+    }
+    card.appendChild(sub);
+  }
+
   // ── Homework ──────────────────────────────────────────────
   if (course.homework && course.homework.length) {
     const sub = el("div", "course-sub");

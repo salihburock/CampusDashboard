@@ -808,9 +808,18 @@ app.post('/api/conversion/convert', uploadConv.single('file'), async (req, res) 
   } catch (e) { try { fs.unlinkSync(tmpPath); } catch {} res.status(500).json({ error: `Conversion failed: ${e.message}` }); }
 });
 
-app.get('/docs/:filename', (req, res) => {
-  const filePath = path.join(req.paths.DOCS_DIR, req.params.filename);
-  if (fs.existsSync(filePath)) res.sendFile(filePath);
+app.get('/docs/*', (req, res) => {
+  // Wildcard (not :filename) so per-course subfolders work, e.g.
+  // /docs/materials/CS%20321.A/index.html -- req.params[0] is everything
+  // after /docs/, still URL-decoded by Express. Resolve and verify the
+  // result stays inside DOCS_DIR before serving, since a relative segment
+  // like "../../etc/passwd" would otherwise escape it.
+  const docsRoot = path.resolve(req.paths.DOCS_DIR);
+  const filePath = path.resolve(docsRoot, req.params[0]);
+  if (filePath !== docsRoot && !filePath.startsWith(docsRoot + path.sep)) {
+    return res.status(403).send('Forbidden');
+  }
+  if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) res.sendFile(filePath);
   else res.status(404).send('Not found');
 });
 
