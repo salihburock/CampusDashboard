@@ -150,10 +150,3 @@ docs-registry.json
 docs-registry_guest.json
 users.json
 userdata/
-
-# LMS automation: screenshots/HTML dumps can contain session/account details
-integrations/lms/debug/
-integrations/lms/gui/__pycache__/
-integrations/lms/gui/syllabi/
-integrations/lms/gui/state.json
-integrations/lms/gui/debug/

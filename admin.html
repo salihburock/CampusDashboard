@@ -55,6 +55,8 @@
     <div class="admin-card">
       <div class="admin-card-header">
         <h2 data-i18n="adm.sections">Sections</h2>
+        <button id="moodle-sync-btn" class="btn-secondary btn-sm" style="display:none"
+                onclick="openMoodleSync()" data-i18n="msync.button">🔄 Sync from Moodle</button>
       </div>
       <div id="sections-container"></div>
       <button onclick="addSection()" class="btn-secondary" data-i18n="adm.add_section">+ Add Section</button>
@@ -96,6 +98,17 @@
           <button class="btn-primary btn-sm" onclick="confirmNewSemester()" data-i18n="sem.create">Create</button>
           <button class="btn-secondary btn-sm" onclick="closeSemesterModal()" data-i18n="sem.cancel">Cancel</button>
         </div>
+      </div>
+    </div>
+
+    <!-- Moodle Sync Modal -->
+    <div id="moodle-sync-modal" class="moodle-modal-backdrop hidden">
+      <div class="moodle-modal-box" style="width:min(94vw,560px)">
+        <div class="moodle-modal-header">
+          <h3 data-i18n="msync.title">Sync from Moodle</h3>
+          <button class="icon-btn" onclick="closeMoodleSync()">✕</button>
+        </div>
+        <div id="moodle-sync-body" class="moodle-modal-body"></div>
       </div>
     </div>
 

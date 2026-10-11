@@ -976,6 +976,141 @@ async function confirmMoodleImport() {
   renderSections();
 }
 
+// ── Moodle Sync ───────────────────────────────────────────────
+// Pulls courses, upcoming deadlines and (optionally) grades from the user's
+// connected Moodle (see /account) and merges them into this semester.
+// Synced rows carry a moodleId, so a re-sync updates them in place and
+// leaves anything added by hand alone.
+
+async function initMoodleSync() {
+  try {
+    const res = await fetch('/api/moodle/status');
+    if (!res.ok) return;
+    const st = await res.json();
+    if (st.configured) document.getElementById('moodle-sync-btn').style.display = '';
+  } catch {}
+}
+
+function closeMoodleSync() {
+  document.getElementById('moodle-sync-modal').classList.add('hidden');
+}
+
+function moodleSyncError(data) {
+  const body = document.getElementById('moodle-sync-body');
+  body.innerHTML = `<p style="color:var(--danger,#e63946)">${esc(data.error || t('msync.fail'))}</p>` +
+    (data.reconnect ? `<p class="moodle-hint" style="margin-top:.5rem"><a href="/account">${esc(t('msync.connect'))}</a></p>` : '');
+}
+
+async function openMoodleSync() {
+  const body = document.getElementById('moodle-sync-body');
+  body.innerHTML = `<p class="moodle-hint">${esc(t('msync.loading'))}</p>`;
+  document.getElementById('moodle-sync-modal').classList.remove('hidden');
+
+  let courses;
+  try {
+    const res = await fetch('/api/moodle/courses');
+    courses = await res.json();
+    if (!res.ok) return moodleSyncError(courses);
+  } catch { return moodleSyncError({}); }
+
+  if (!courses.length) {
+    body.innerHTML = `<p class="moodle-hint">${esc(t('msync.none'))}</p>`;
+    return;
+  }
+
+  // Current courses first, pre-checked; also pre-check ones already synced.
+  const synced = new Set();
+  state.sections.forEach(s => s.type === 'courses' && s.items.forEach(i => i.moodleId && synced.add(i.moodleId)));
+  courses.sort((a, b) => (b.current - a.current) || a.code.localeCompare(b.code));
+
+  body.innerHTML = `
+    <p class="moodle-hint" style="margin-bottom:.75rem">${esc(t('msync.hint'))}</p>
+    ${courses.map(c => `
+      <label class="toggle-label" style="display:flex;gap:.5rem;padding:.2rem 0;${c.current ? '' : 'opacity:.6'}">
+        <input type="checkbox" class="msync-course" value="${c.id}" ${c.current || synced.has(c.id) ? 'checked' : ''}>
+        <span><strong>${esc(c.code)}</strong> — ${esc(c.name)}</span>
+      </label>`).join('')}
+    <label class="toggle-label" style="margin-top:.75rem;display:flex;gap:.5rem">
+      <input type="checkbox" id="msync-grades">
+      <span>${esc(t('msync.grades'))}</span>
+    </label>
+    <p class="moodle-hint">${esc(t('msync.grades_hint'))}</p>
+    <div class="moodle-import-bar" style="margin:0 -1.25rem -1.25rem">
+      <button class="btn-primary btn-sm" id="msync-go" onclick="runMoodleSync()">${esc(t('msync.go'))}</button>
+      <button class="btn-secondary btn-sm" onclick="closeMoodleSync()">${esc(t('sem.cancel'))}</button>
+    </div>`;
+}
+
+async function runMoodleSync() {
+  const courseIds = [...document.querySelectorAll('.msync-course:checked')].map(cb => Number(cb.value));
+  if (!courseIds.length) { showToast(t('msync.pick'), true); return; }
+  const grades = document.getElementById('msync-grades').checked;
+  const btn = document.getElementById('msync-go');
+  btn.disabled = true; btn.textContent = t('msync.loading');
+
+  let fetched;
+  try {
+    const res = await fetch('/api/moodle/fetch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ courseIds, grades })
+    });
+    fetched = await res.json();
+    if (!res.ok) return moodleSyncError(fetched);
+  } catch { return moodleSyncError({}); }
+
+  const counts = mergeMoodleCourses(fetched, grades);
+  await saveData();
+  closeMoodleSync();
+  renderSections();
+  showToast(t('msync.done', counts));
+}
+
+function mergeMoodleCourses(fetched, withGrades) {
+  const norm = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+  let section = state.sections.find(s => s.type === 'courses');
+  if (!section) {
+    // Private by default: synced data can include grades.
+    section = { title: 'Courses', type: 'courses', collapsed: false, visibility: 'private', items: [] };
+    state.sections.push(section);
+  }
+
+  let added = 0, deadlines = 0;
+  for (const mc of fetched) {
+    // Match a course synced before, else a hand-made one whose code is a
+    // prefix of the Moodle short name ("CS321" ↔ "CS 321.A Fall 2026").
+    let course = state.sections.flatMap(s => s.type === 'courses' ? s.items : [])
+      .find(i => i.moodleId === mc.moodleId);
+    if (!course) {
+      course = section.items.find(i => !i.moodleId && norm(i.code) && norm(mc.code).startsWith(norm(i.code)));
+    }
+    if (!course) {
+      course = JSON.parse(JSON.stringify(DEFAULT_ITEM.courses));
+      course.code = mc.code;
+      course.name = mc.name;
+      section.items.push(course);
+      added++;
+    }
+    course.moodleId = mc.moodleId;
+    if (!course.name) course.name = mc.name;
+
+    // Homework: keep hand-added rows; replace synced rows, keeping any file
+    // or notes the user attached to them.
+    const old = new Map((course.homework || []).filter(h => h.moodleId).map(h => [h.moodleId, h]));
+    const manual = (course.homework || []).filter(h => !h.moodleId);
+    const synced = mc.homework.map(h => {
+      const prev = old.get(h.moodleId);
+      return { ...h, file: prev ? prev.file || '' : '', notes: prev && prev.notes ? prev.notes : h.notes };
+    });
+    course.homework = [...manual, ...synced];
+    deadlines += synced.length;
+
+    if (withGrades && mc.grades) course.grades = mc.grades;
+  }
+  return { courses: fetched.length, added, deadlines };
+}
+
 // ── Theme ─────────────────────────────────────────────────────
 (function setupTheme() {
   const btn = document.getElementById('theme-toggle');
@@ -994,6 +1129,7 @@ async function confirmMoodleImport() {
 (async function initAdmin() {
   await loadSemesters();
   await loadData();
+  initMoodleSync();
 })();
 
 // ── Manual PDF Upload ──────────────────────────────────────────

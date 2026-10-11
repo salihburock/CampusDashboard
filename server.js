@@ -18,6 +18,8 @@ if (!process.env.SESSION_SECRET) {
   process.exit(1);
 }
 
+const moodle = require('./moodle'); // reads MOODLE_URL, so after .env is loaded
+
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
@@ -792,6 +794,42 @@ app.post('/api/upload/confirm', requireUser, async (req, res) => {
     delete _staged[id];
     res.status(500).json({ error: e.message });
   }
+});
+
+// ── Moodle ────────────────────────────────────────────────────
+function moodleFail(res, e) {
+  if (!(e instanceof moodle.MoodleError)) {
+    console.error('Moodle:', e);
+    return res.status(500).json({ error: 'Moodle request failed' });
+  }
+  const reconnect = e.isAuthError || e.code === 'notconnected';
+  res.status(reconnect ? 409 : 502).json({ error: e.message, reconnect });
+}
+
+app.get('/api/moodle/status', requireUser, (req, res) => res.json(moodle.status(req.paths.owner)));
+
+app.post('/api/moodle/connect', requireUser, async (req, res) => {
+  const { token, siteId, passport } = req.body || {};
+  try { res.json(await moodle.connect(req.paths.owner, { token, siteId, passport })); }
+  catch (e) { moodleFail(res, e); }
+});
+
+app.delete('/api/moodle/connect', requireUser, (req, res) => {
+  moodle.disconnect(req.paths.owner);
+  res.json(moodle.status(req.paths.owner));
+});
+
+app.get('/api/moodle/courses', requireUser, async (req, res) => {
+  try { res.json(await moodle.listCourses(req.paths.owner)); }
+  catch (e) { moodleFail(res, e); }
+});
+
+// Returns normalized course data; the editor merges it into the dashboard.
+app.post('/api/moodle/fetch', requireUser, async (req, res) => {
+  const ids = Array.isArray(req.body.courseIds) ? req.body.courseIds.map(Number).filter(Number.isInteger) : [];
+  if (!ids.length) return res.status(400).json({ error: 'No courses selected' });
+  try { res.json(await moodle.fetchCourses(req.paths.owner, ids, { grades: req.body.grades === true })); }
+  catch (e) { moodleFail(res, e); }
 });
 
 app.get('/api/conversion/formats', (req, res) => res.json(SUPPORTED_CONVERSIONS));
