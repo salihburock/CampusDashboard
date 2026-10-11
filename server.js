@@ -311,6 +311,122 @@ async function autoNamePdf(filePath) {
   return null;
 }
 
+// ── Moodle file sync: filename-only classification ─────────────
+// Course codes/names coming out of Moodle aren't always clean ("CS 321.A",
+// "İşletim Sistemleri (Güz)", ...) and the file that's actually the syllabus
+// isn't always named anything close to "syllabus". Rather than hardcode
+// regexes for every variation, an LLM agent reads just the course code and
+// the list of filenames (no downloads needed yet) and returns a safe folder
+// slug plus which file, if any, looks like the syllabus.
+const FILE_ORG_PROMPT =
+  'You are organizing a university course\'s files for local storage. You will get a course ' +
+  'code (possibly messy, e.g. with section letters, diacritics, or in another language) and a ' +
+  'numbered list of filenames found in that course on Moodle.\n' +
+  'Reply with ONLY a JSON object, no other text, no markdown fences:\n' +
+  '{"slug": "lowercase-ascii-folder-name-for-this-course", "syllabusIndex": <number or -1>}\n' +
+  '- slug: short, filesystem-safe (letters/digits/dashes only), derived from the course code, ' +
+  'e.g. "CS 321.A" -> "cs321a".\n' +
+  '- syllabusIndex: the index of the file that is the course syllabus / outline / "ders izlencesi" ' +
+  '(judge by filename alone), or -1 if none of the filenames look like a syllabus.';
+
+function regexFallbackClassify(code, filenames) {
+  const slug = String(code || 'course').toLowerCase().replace(/[^a-z0-9]+/g, '') || 'course';
+  const syllabusIndex = filenames.findIndex(f => /syllabus|izlence|course.?outline/i.test(f));
+  return { slug, syllabusIndex };
+}
+
+function parseClassifyResponse(raw, filenames) {
+  const match = String(raw || '').match(/\{[\s\S]*\}/);
+  if (!match) return null;
+  let parsed;
+  try { parsed = JSON.parse(match[0]); } catch { return null; }
+  const slug = String(parsed.slug || '').toLowerCase().replace(/[^a-z0-9-]+/g, '');
+  const idx = Number(parsed.syllabusIndex);
+  if (!slug) return null;
+  return { slug, syllabusIndex: Number.isInteger(idx) && idx >= 0 && idx < filenames.length ? idx : -1 };
+}
+
+async function classifyCourseFilesWithLlm(code, filenames) {
+  const prompt = `${FILE_ORG_PROMPT}\n\nCourse code: ${code}\nFiles:\n` +
+    filenames.map((f, i) => `${i}: ${f}`).join('\n');
+  try {
+    const ping = await fetch(`${OLLAMA_HOST}/api/tags`, { signal: AbortSignal.timeout(2000) });
+    if (ping.ok) {
+      const res = await fetch(`${OLLAMA_HOST}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: OLLAMA_MODEL, prompt, stream: false, options: { num_predict: 80, temperature: 0.1 }
+        })
+      });
+      if (res.ok) {
+        const parsed = parseClassifyResponse((await res.json()).response, filenames);
+        if (parsed) return parsed;
+      }
+    }
+  } catch {}
+  if (GEMINI_KEY) {
+    try {
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${GEMINI_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { maxOutputTokens: 80, temperature: 0.1 }
+        })
+      });
+      if (res.ok) {
+        const json = await res.json();
+        const parsed = parseClassifyResponse(json.candidates?.[0]?.content?.parts?.[0]?.text, filenames);
+        if (parsed) return parsed;
+      }
+    } catch {}
+  }
+  return regexFallbackClassify(code, filenames);
+}
+
+function sanitizeSegment(name) {
+  return String(name || '').replace(/[^a-zA-Z0-9.\-_]/g, '_').replace(/^\.+/, '_') || 'file';
+}
+
+// Lists a course's Moodle files, asks the LLM agent which one is the
+// syllabus and what folder slug to use, downloads everything, and returns
+// { syllabus: "docs/..." | null, resources: [{name, url, moodleFileId}] }
+// for the frontend to merge into the course item.
+async function syncMoodleFiles(paths, code, moodleFiles) {
+  if (!moodleFiles.length) return { syllabus: null, resources: [] };
+
+  const { slug, syllabusIndex } = await classifyCourseFilesWithLlm(code, moodleFiles.map(f => f.filename));
+  const safeSlug = /^[a-z0-9-]+$/.test(slug) ? slug : regexFallbackClassify(code, []).slug;
+
+  let syllabus = null;
+  const resources = [];
+  for (let i = 0; i < moodleFiles.length; i++) {
+    const f = moodleFiles[i];
+    let buf;
+    try { buf = await moodle.downloadFile(paths.owner, f.fileurl); }
+    catch (e) { console.error(`Moodle file download failed (${f.filename}):`, e.message); continue; }
+
+    if (i === syllabusIndex) {
+      fs.writeFileSync(path.join(paths.DOCS_DIR, `syllabus-${safeSlug}.pdf`), buf);
+      syllabus = `docs/syllabus-${safeSlug}.pdf`;
+    } else {
+      const sectionDir = sanitizeSegment(f.section);
+      const destDir = path.join(paths.DOCS_DIR, 'materials', safeSlug, sectionDir);
+      fs.mkdirSync(destDir, { recursive: true });
+      const filename = sanitizeSegment(f.filename);
+      fs.writeFileSync(path.join(destDir, filename), buf);
+      resources.push({
+        title: f.filename,
+        file: `docs/materials/${safeSlug}/${sectionDir}/${filename}`,
+        notes: f.section || '',
+        moodleFileId: crypto.createHash('md5').update(f.fileurl.split('?')[0]).digest('hex').slice(0, 12),
+      });
+    }
+  }
+  return { syllabus, resources };
+}
+
 // ── Course catalog ────────────────────────────────────────────
 let COURSE_CATALOG = {};
 function unescapeXml(str) {
@@ -830,6 +946,20 @@ app.post('/api/moodle/fetch', requireUser, async (req, res) => {
   if (!ids.length) return res.status(400).json({ error: 'No courses selected' });
   try { res.json(await moodle.fetchCourses(req.paths.owner, ids, { grades: req.body.grades === true })); }
   catch (e) { moodleFail(res, e); }
+});
+
+// Downloads one course's Moodle files into this user's docs/, picking the
+// syllabus out with the LLM agent (see syncMoodleFiles). Separate from
+// /fetch since it's much slower (real downloads) and most re-syncs don't
+// need it.
+app.post('/api/moodle/files', requireUser, async (req, res) => {
+  const courseId = Number(req.body.courseId);
+  const code = String(req.body.code || '').slice(0, 64);
+  if (!Number.isInteger(courseId)) return res.status(400).json({ error: 'Missing courseId' });
+  try {
+    const files = await moodle.courseFiles(req.paths.owner, courseId);
+    res.json(await syncMoodleFiles(req.paths, code, files));
+  } catch (e) { moodleFail(res, e); }
 });
 
 app.get('/api/conversion/formats', (req, res) => res.json(SUPPORTED_CONVERSIONS));
