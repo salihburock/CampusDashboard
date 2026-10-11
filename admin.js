@@ -1035,6 +1035,11 @@ async function openMoodleSync() {
       <span>${esc(t('msync.grades'))}</span>
     </label>
     <p class="moodle-hint">${esc(t('msync.grades_hint'))}</p>
+    <label class="toggle-label" style="margin-top:.5rem;display:flex;gap:.5rem">
+      <input type="checkbox" id="msync-files">
+      <span>${esc(t('msync.files'))}</span>
+    </label>
+    <p class="moodle-hint">${esc(t('msync.files_hint'))}</p>
     <div class="moodle-import-bar" style="margin:0 -1.25rem -1.25rem">
       <button class="btn-primary btn-sm" id="msync-go" onclick="runMoodleSync()">${esc(t('msync.go'))}</button>
       <button class="btn-secondary btn-sm" onclick="closeMoodleSync()">${esc(t('sem.cancel'))}</button>
@@ -1045,6 +1050,7 @@ async function runMoodleSync() {
   const courseIds = [...document.querySelectorAll('.msync-course:checked')].map(cb => Number(cb.value));
   if (!courseIds.length) { showToast(t('msync.pick'), true); return; }
   const grades = document.getElementById('msync-grades').checked;
+  const files = document.getElementById('msync-files').checked;
   const btn = document.getElementById('msync-go');
   btn.disabled = true; btn.textContent = t('msync.loading');
 
@@ -1060,10 +1066,40 @@ async function runMoodleSync() {
   } catch { return moodleSyncError({}); }
 
   const counts = mergeMoodleCourses(fetched, grades);
+
+  if (files) {
+    let filesSynced = 0;
+    for (const mc of fetched) {
+      btn.textContent = t('msync.loading_files', { code: mc.code });
+      try {
+        const res = await fetch('/api/moodle/files', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ courseId: mc.moodleId, code: mc.code })
+        });
+        const data = await res.json();
+        if (res.ok) { mergeMoodleFiles(mc.moodleId, data); filesSynced++; }
+      } catch {}
+    }
+    counts.files = filesSynced;
+  }
+
   await saveData();
   closeMoodleSync();
   renderSections();
   showToast(t('msync.done', counts));
+}
+
+// Attaches a /api/moodle/files result ({syllabus, resources}) to the course
+// that was just synced. Resources carry a moodleFileId so a re-sync updates
+// them in place instead of duplicating; hand-added resources are untouched.
+function mergeMoodleFiles(moodleId, { syllabus, resources }) {
+  const course = state.sections.flatMap(s => s.type === 'courses' ? s.items : [])
+    .find(i => i.moodleId === moodleId);
+  if (!course) return;
+  if (syllabus) course.syllabus = syllabus;
+  const manual = (course.resources || []).filter(r => !r.moodleFileId);
+  course.resources = [...manual, ...(resources || [])];
 }
 
 function mergeMoodleCourses(fetched, withGrades) {

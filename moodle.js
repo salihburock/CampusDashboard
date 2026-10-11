@@ -22,6 +22,7 @@ const ALLOWED_FUNCTIONS = new Set([
   'core_enrol_get_users_courses',
   'core_calendar_get_action_events_by_timesort',
   'gradereport_user_get_grade_items',
+  'core_course_get_contents',
 ]);
 
 const MOODLE_URL = (process.env.MOODLE_URL || '').trim().replace(/\/+$/, '');
@@ -268,4 +269,50 @@ async function fetchCourses(owner, courseIds, { grades = false } = {}) {
   return out;
 }
 
-module.exports = { MoodleError, status, connect, disconnect, listCourses, fetchCourses };
+// Flat list of downloadable files across all of a course's sections/modules
+// -- { section, module, filename, fileurl, filesize, mimetype }. fileurl is
+// a Moodle pluginfile URL that still needs the token appended to be fetched
+// (see downloadFile).
+async function courseFiles(owner, courseId) {
+  const conn = requireConn(owner);
+  const sections = await call(conn.token, 'core_course_get_contents', { courseid: courseId });
+  const files = [];
+  for (const sec of sections || []) {
+    for (const mod of sec.modules || []) {
+      for (const f of mod.contents || []) {
+        if (f.type !== 'file' || !f.fileurl) continue;
+        files.push({
+          section: decodeEntities(sec.name || 'General'),
+          module: decodeEntities(mod.name || ''),
+          filename: decodeEntities(f.filename || ''),
+          fileurl: f.fileurl,
+          filesize: f.filesize || 0,
+          mimetype: f.mimetype || '',
+        });
+      }
+    }
+  }
+  return files;
+}
+
+// Downloads one file from a URL returned by courseFiles. Moodle file URLs
+// take the token as a query param rather than wsfunction/wstoken, so this
+// doesn't go through call(); the host is checked against MOODLE_URL first
+// since the token would otherwise leak to wherever fileurl points.
+async function downloadFile(owner, fileurl) {
+  const conn = requireConn(owner);
+  const u = new URL(fileurl);
+  if (normalizeSiteUrl(u.origin) !== normalizeSiteUrl(new URL(MOODLE_URL).origin)) {
+    throw new MoodleError('Refusing to send the token to a non-Moodle host');
+  }
+  u.searchParams.set('token', conn.token);
+  let res;
+  try { res = await fetch(u, { signal: AbortSignal.timeout(30000) }); }
+  catch (e) { throw new MoodleError(`Could not download file: ${e.message}`); }
+  if (!res.ok) throw new MoodleError(`Could not download file (HTTP ${res.status})`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+module.exports = {
+  MoodleError, status, connect, disconnect, listCourses, fetchCourses, courseFiles, downloadFile,
+};
