@@ -180,6 +180,29 @@
       </div>
     </div>
 
+    <div class="account-card" id="moodle-card" style="display:none">
+      <h2>Moodle</h2>
+      <div id="moodle-connected" style="display:none">
+        <p class="share-hint" id="moodle-who"></p>
+        <p class="share-hint" data-i18n="acct.moodle_sync_hint">Pick courses to pull in with “Sync from Moodle” in the editor.</p>
+        <button class="btn-logout" onclick="moodleDisconnect()" data-i18n="acct.moodle_disconnect">Disconnect</button>
+      </div>
+      <div id="moodle-disconnected" style="display:none">
+        <p class="share-hint" data-i18n="acct.moodle_hint">Import your courses, upcoming deadlines and grades. Drag this button to your bookmarks bar, open Moodle (logged in) and click the bookmark:</p>
+        <p style="text-align:center;margin:.25rem 0 1rem">
+          <a id="moodle-bookmarklet" class="btn-copy" style="text-decoration:none;display:inline-block" onclick="event.preventDefault();alert(t('acct.moodle_drag'))">☁ Connect Dashboard</a>
+        </p>
+        <details>
+          <summary class="share-hint" style="cursor:pointer" data-i18n="acct.moodle_manual">Or paste a Moodle web service token</summary>
+          <div class="share-row" style="margin-top:.5rem">
+            <input type="password" id="moodle-token" class="share-input" autocomplete="off">
+            <button class="btn-copy" onclick="moodleConnect({ token: document.getElementById('moodle-token').value })" data-i18n="acct.moodle_connect">Connect</button>
+          </div>
+        </details>
+      </div>
+      <div class="msg" id="moodle-msg"></div>
+    </div>
+
     <div class="account-card">
       <h2 data-i18n="acct.change_pw">Change Password</h2>
       <form id="pw-form">
@@ -269,6 +292,85 @@
         document.getElementById('share-url').value = data.url;
         document.getElementById('share-card').style.display = '';
       } catch {}
+    })();
+
+    // ── Moodle ──────────────────────────────────────────────────
+    // The bookmarklet runs on the Moodle page, asks Moodle's mobile-app
+    // launch page for a token and comes back here with it in the URL
+    // fragment, which browsers never send to a server.
+    function moodleBookmarklet(site) {
+      const cfg = JSON.stringify({
+        S: site, A: location.origin,
+        W: t('acct.moodle_wrong_site', { site }), L: t('acct.moodle_login')
+      });
+      const js = `(async()=>{const{S,A,W,L}=${cfg};
+if(location.origin!==new URL(S).origin){if(confirm(W))location.href=S+"/my/";return}
+const p=crypto.randomUUID();let h;
+try{const r=await fetch(S+"/admin/tool/mobile/launch.php?service=moodle_mobile_app&passport="+p+"&urlscheme=moodlemobile&confirmed=1",{credentials:"include"});
+h=new DOMParser().parseFromString(await r.text(),"text/html").querySelector("#launchapp")?.getAttribute("href")}catch(e){}
+if(!h||!h.includes("token=")){alert(L);location.href=S+"/login/index.php";return}
+const[s,t]=atob(h.split("token=")[1]).split(":::");
+location.href=A+"/account#moodle="+encodeURIComponent(JSON.stringify({s,t,p}))})();`;
+      return 'javascript:' + encodeURIComponent(js.replace(/\n/g, ''));
+    }
+
+    function moodleMsg(text, ok) {
+      const el = document.getElementById('moodle-msg');
+      el.textContent = text;
+      el.className = 'msg ' + (ok ? 'ok' : 'err');
+      el.style.display = text ? 'block' : 'none';
+    }
+
+    function renderMoodle(st) {
+      if (!st.configured) return;
+      document.getElementById('moodle-card').style.display = '';
+      document.getElementById('moodle-connected').style.display = st.connected ? '' : 'none';
+      document.getElementById('moodle-disconnected').style.display = st.connected ? 'none' : '';
+      if (st.connected) {
+        document.getElementById('moodle-who').textContent =
+          t('acct.moodle_as', { name: st.fullname || '', site: st.sitename || st.siteUrl });
+      } else {
+        document.getElementById('moodle-bookmarklet').href = moodleBookmarklet(st.siteUrl);
+      }
+    }
+
+    async function moodleConnect(body) {
+      moodleMsg(t('acct.moodle_connecting'), true);
+      try {
+        const res = await fetch('/api/moodle/connect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (!res.ok) return moodleMsg(data.error || t('acct.moodle_fail'), false);
+        document.getElementById('moodle-token').value = '';
+        renderMoodle(data);
+        moodleMsg(t('acct.moodle_ok'), true);
+      } catch {
+        moodleMsg(t('acct.moodle_fail'), false);
+      }
+    }
+
+    async function moodleDisconnect() {
+      const res = await fetch('/api/moodle/connect', { method: 'DELETE' });
+      if (res.ok) { renderMoodle(await res.json()); moodleMsg('', true); }
+    }
+
+    (async () => {
+      // Coming back from the bookmarklet: drop the token from the address bar
+      // and history first, then hand it to the server.
+      let incoming = null;
+      if (location.hash.startsWith('#moodle=')) {
+        try { incoming = JSON.parse(decodeURIComponent(location.hash.slice(8))); } catch {}
+        history.replaceState(null, '', location.pathname);
+      }
+      try {
+        const res = await fetch('/api/moodle/status');
+        if (!res.ok) return;
+        renderMoodle(await res.json());
+      } catch { return; }
+      if (incoming) moodleConnect({ token: incoming.t, siteId: incoming.s, passport: incoming.p });
     })();
 
     function copyFeedback() {
