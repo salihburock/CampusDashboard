@@ -16,6 +16,8 @@
 const fs     = require('fs');
 const path   = require('path');
 const crypto = require('crypto');
+const { Readable } = require('stream');
+const { pipeline } = require('stream/promises');
 
 const ALLOWED_FUNCTIONS = new Set([
   'core_webservice_get_site_info',
@@ -209,9 +211,12 @@ async function listCourses(owner) {
 
 // Upcoming items the user still has to act on (assignments, quizzes, …),
 // grouped by course id. Moodle leaves out what is already submitted.
-async function upcomingEvents(token, courseIds) {
+// Items the user still has to act on (assignments, quizzes, …), keyed by
+// "<module>:<instance>" per course id. Moodle leaves out what is already
+// submitted, so anything from the last two weeks here is really overdue.
+async function actionEvents(token, courseIds) {
   const byCourse = {};
-  const from = Math.floor(Date.now() / 1000) - 86400;
+  const from = Math.floor(Date.now() / 1000) - 14 * 86400;
   let after;
   for (let page = 0; page < 5; page++) {
     const res = await call(token, 'core_calendar_get_action_events_by_timesort',
@@ -220,19 +225,53 @@ async function upcomingEvents(token, courseIds) {
     for (const ev of events) {
       const cid = ev.course && ev.course.id;
       if (!courseIds.has(cid)) continue;
-      (byCourse[cid] = byCourse[cid] || []).push({
-        moodleId: `${ev.modulename || 'event'}:${ev.instance || ev.id}`,
+      const id = `${ev.modulename || 'event'}:${ev.instance || ev.id}`;
+      (byCourse[cid] = byCourse[cid] || new Map()).set(id, {
+        moodleId: id,
         title: decodeEntities(ev.activityname || ev.name || ''),
         deadline: ymd(ev.timesort),
-        notes: ev.modulename && ev.modulename !== 'assign'
+        description: ev.modulename && ev.modulename !== 'assign'
           ? ev.modulename.charAt(0).toUpperCase() + ev.modulename.slice(1)
           : '',
+        url: ev.url || '',
       });
     }
     if (events.length < 50) break;
     after = events[events.length - 1].id;
   }
   return byCourse;
+}
+
+// Assignments per course id. Empty when the site doesn't allow the call.
+async function assignmentsByCourse(token, courseIds) {
+  try {
+    const res = await call(token, 'mod_assign_get_assignments', { courseids: courseIds });
+    return Object.fromEntries((res.courses || []).map(c => [c.id, c.assignments || []]));
+  } catch (e) {
+    if (e.isAuthError) throw e;
+    return {};
+  }
+}
+
+// Homework rows for one course: every assignment that is due from now on
+// (submitted or not) or still waiting in the user's to-do list, plus other
+// to-do items such as quizzes. Each row links to its Moodle page and carries
+// the assignment's description.
+function homeworkRows(assignments, events) {
+  const now = Date.now() / 1000;
+  const rows = new Map(events);
+  for (const a of assignments) {
+    const id = `assign:${a.id}`;
+    if (!a.duedate || (a.duedate < now - 86400 && !events.has(id))) continue;
+    rows.set(id, {
+      moodleId: id,
+      title: decodeEntities(a.name || ''),
+      deadline: ymd(a.duedate),
+      description: stripHtml(a.intro, 300),
+      url: (events.get(id) || {}).url || (a.cmid ? `${MOODLE_URL}/mod/assign/view.php?id=${a.cmid}` : ''),
+    });
+  }
+  return [...rows.values()].sort((x, y) => x.deadline.localeCompare(y.deadline));
 }
 
 // Graded items only; categories are left out. Matches the dashboard's
@@ -252,15 +291,22 @@ async function courseGrades(token, userId, courseId) {
     }));
 }
 
-// Courses (by Moodle id) with their upcoming deadlines and, optionally, grades.
+// Courses (by Moodle id) with their deadlines and, optionally, grades.
 async function fetchCourses(owner, courseIds, { grades = false } = {}) {
   const conn = requireConn(owner);
   const all = await listCourses(owner);
   const wanted = all.filter(c => courseIds.includes(c.id));
-  const events = await upcomingEvents(conn.token, new Set(wanted.map(c => c.id)));
+  const ids = wanted.map(c => c.id);
+  const [events, assignments] = await Promise.all([
+    actionEvents(conn.token, new Set(ids)),
+    assignmentsByCourse(conn.token, ids),
+  ]);
   const out = [];
   for (const c of wanted) {
-    const course = { moodleId: c.id, code: c.code, name: c.name, homework: events[c.id] || [] };
+    const course = {
+      moodleId: c.id, code: c.code, name: c.name,
+      homework: homeworkRows(assignments[c.id] || [], events[c.id] || new Map()),
+    };
     if (grades) {
       try { course.grades = await courseGrades(conn.token, conn.userId, c.id); }
       catch (e) { if (e.isAuthError) throw e; course.gradesError = e.message; }
@@ -275,10 +321,10 @@ async function fetchCourses(owner, courseIds, { grades = false } = {}) {
 // fileurl is a Moodle pluginfile URL that still needs the token appended to
 // be fetched (see downloadFile).
 //
-// Files attached to an assignment's description (the homework PDF itself)
-// are not part of core_course_get_contents, so they come from
-// mod_assign_get_assignments and carry the assignment's id (assignId), which
-// matches the "assign:<id>" moodleId of its homework row.
+// Files of an assignment (the homework PDF itself) carry the assignment's id
+// (assignId), which matches the "assign:<id>" moodleId of its homework row.
+// Newer Moodle versions list them in the assignment module's contents;
+// mod_assign_get_assignments fills in the rest (and older versions).
 async function courseFiles(owner, courseId) {
   const conn = requireConn(owner);
   const sections = await call(conn.token, 'core_course_get_contents', { courseid: courseId });
@@ -296,33 +342,31 @@ async function courseFiles(owner, courseId) {
           filename: decodeEntities(f.filename || ''),
           fileurl: f.fileurl,
           filesize: f.filesize || 0,
+          timemodified: f.timemodified || 0,
           mimetype: f.mimetype || '',
+          ...(mod.modname === 'assign' ? { assignId: mod.instance } : {}),
         });
       }
     }
   }
 
-  let assignments = [];
-  try {
-    const res = await call(conn.token, 'mod_assign_get_assignments', { courseids: [courseId] });
-    assignments = (res.courses && res.courses[0] && res.courses[0].assignments) || [];
-  } catch (e) {
-    if (e.isAuthError) throw e; // otherwise: no assignment access, keep the rest
-  }
-  const seen = new Set(files.map(f => f.fileurl));
+  const assignments = (await assignmentsByCourse(conn.token, [courseId]))[courseId] || [];
+  const byUrl = new Map(files.map(f => [f.fileurl, f]));
   for (const a of assignments) {
     // introattachments: files added under "Additional files"; introfiles:
     // files embedded in the description (images are skipped).
     const attached = [...(a.introattachments || []), ...(a.introfiles || [])];
     for (const f of attached) {
-      if (!f.fileurl || seen.has(f.fileurl) || /^image\//.test(f.mimetype || '')) continue;
-      seen.add(f.fileurl);
+      if (!f.fileurl || /^image\//.test(f.mimetype || '')) continue;
+      const known = byUrl.get(f.fileurl);
+      if (known) { known.assignId = a.id; continue; }
       files.push({
         section: assignSection[a.id] || 'Assignments',
         module: decodeEntities(a.name || ''),
         filename: decodeEntities(f.filename || ''),
         fileurl: f.fileurl,
         filesize: f.filesize || 0,
+        timemodified: f.timemodified || 0,
         mimetype: f.mimetype || '',
         assignId: a.id,
       });
@@ -331,22 +375,26 @@ async function courseFiles(owner, courseId) {
   return files;
 }
 
-// Downloads one file from a URL returned by courseFiles. Moodle file URLs
+// Downloads one file from a URL returned by courseFiles straight to
+// destPath (streamed, so large files don't sit in memory). Moodle file URLs
 // take the token as a query param rather than wsfunction/wstoken, so this
 // doesn't go through call(); the host is checked against MOODLE_URL first
 // since the token would otherwise leak to wherever fileurl points.
-async function downloadFile(owner, fileurl) {
+async function downloadFile(owner, fileurl, destPath) {
   const conn = requireConn(owner);
   const u = new URL(fileurl);
   if (normalizeSiteUrl(u.origin) !== normalizeSiteUrl(new URL(MOODLE_URL).origin)) {
     throw new MoodleError('Refusing to send the token to a non-Moodle host');
   }
   u.searchParams.set('token', conn.token);
-  let res;
-  try { res = await fetch(u, { signal: AbortSignal.timeout(30000) }); }
-  catch (e) { throw new MoodleError(`Could not download file: ${e.message}`); }
-  if (!res.ok) throw new MoodleError(`Could not download file (HTTP ${res.status})`);
-  return Buffer.from(await res.arrayBuffer());
+  try {
+    const res = await fetch(u, { signal: AbortSignal.timeout(10 * 60000) });
+    if (!res.ok) throw new MoodleError(`Could not download file (HTTP ${res.status})`);
+    await pipeline(Readable.fromWeb(res.body), fs.createWriteStream(destPath));
+  } catch (e) {
+    try { fs.unlinkSync(destPath); } catch {}
+    throw e instanceof MoodleError ? e : new MoodleError(`Could not download file: ${e.message}`);
+  }
 }
 
 module.exports = {

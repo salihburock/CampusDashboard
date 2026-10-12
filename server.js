@@ -19,7 +19,7 @@ if (!process.env.SESSION_SECRET) {
 }
 
 const moodle = require('./moodle'); // reads MOODLE_URL, so after .env is loaded
-const { SUPPORTED_CONVERSIONS, ConversionError, convertFile } = require('./converter');
+const { SUPPORTED_CONVERSIONS, ConversionError, convertFile, convertManyToPdf } = require('./converter');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -391,74 +391,116 @@ function sanitizeSegment(name) {
 }
 
 // Office files are turned into PDFs on sync so they open in the dashboard's
-// PDF viewer. Uses the same LibreOffice conversion as /conversion
-// (convertFile); if it fails, the original file is kept.
+// PDF viewer (LibreOffice, see converter.js); if that fails the original
+// file is kept. Files over MOODLE_MAX_FILE_MB (default 200) are skipped.
 const MOODLE_TO_PDF = new Set(['doc', 'docx', 'odt', 'rtf', 'ppt', 'pptx', 'odp']);
+const MOODLE_MAX_FILE_BYTES = (Number(process.env.MOODLE_MAX_FILE_MB) || 200) * 1024 * 1024;
 
-async function officeToPdf(buf, filename) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'moodle_conv_'));
-  try {
-    const src = path.join(dir, filename);
-    fs.writeFileSync(src, buf);
-    return fs.readFileSync(await convertFile(src, 'pdf', dir));
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+// What earlier syncs saved, so unchanged files aren't downloaded and
+// converted again: files[moodleFileId] = { stamp, file } and the LLM's
+// slug/syllabus choice per course file list.
+function moodleManifestPath(paths) { return path.join(path.dirname(paths.DOCS_DIR), 'moodle-files.json'); }
+function loadMoodleManifest(paths) {
+  try { return { files: {}, courses: {}, ...JSON.parse(fs.readFileSync(moodleManifestPath(paths), 'utf8')) }; }
+  catch { return { files: {}, courses: {} }; }
 }
 
+// Runs fn over items, at most `limit` at a time.
+async function mapLimit(items, limit, fn) {
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) { const i = next++; await fn(items[i], i); }
+  }));
+}
+
+const md5 = s => crypto.createHash('md5').update(s).digest('hex');
+
 // Lists a course's Moodle files, asks the LLM agent which one is the
-// syllabus and what folder slug to use, downloads everything (converting
-// Office files to PDF), and returns
+// syllabus and what folder slug to use, downloads what is new or changed
+// (converting Office files to PDF), and returns
 //   { syllabus: "docs/..." | null,
 //     resources: [{title, file, notes, moodleFileId}],
-//     homework:  [{assignId, title, file, moodleFileId}] }
+//     homework:  [{assignId, title, file, notes, moodleFileId}],
+//     stats: { downloaded, unchanged, converted, skipped: [names], failed: [names] } }
 // for the frontend to merge into the course item. homework holds the files
-// attached to assignments, so they can go onto the matching homework row.
+// of assignments, so they can go onto the matching homework row.
 async function syncMoodleFiles(paths, code, moodleFiles) {
-  if (!moodleFiles.length) return { syllabus: null, resources: [], homework: [] };
+  const stats = { downloaded: 0, unchanged: 0, converted: 0, skipped: [], failed: [] };
+  if (!moodleFiles.length) return { syllabus: null, resources: [], homework: [], stats };
+  const manifest = loadMoodleManifest(paths);
 
-  const { slug, syllabusIndex } = await classifyCourseFilesWithLlm(code, moodleFiles.map(f => f.filename));
-  const safeSlug = /^[a-z0-9-]+$/.test(slug) ? slug : regexFallbackClassify(code, []).slug;
+  const names = moodleFiles.map(f => f.filename);
+  const listKey = md5(code + '\n' + names.join('\n'));
+  let cls = manifest.courses[listKey];
+  if (!cls) {
+    const { slug, syllabusIndex } = await classifyCourseFilesWithLlm(code, names);
+    cls = manifest.courses[listKey] = {
+      slug: /^[a-z0-9-]+$/.test(slug) ? slug : regexFallbackClassify(code, []).slug,
+      syllabusUrl: syllabusIndex >= 0 ? moodleFiles[syllabusIndex].fileurl : null,
+    };
+  }
+
+  // Where each file goes, and whether a copy from an earlier sync can stay.
+  const plan = moodleFiles.map(f => {
+    const id = md5(f.fileurl.split('?')[0]).slice(0, 12);
+    const name = sanitizeSegment(f.filename);
+    const ext = path.extname(name).slice(1).toLowerCase();
+    const syllabus = f.fileurl === cls.syllabusUrl;
+    const sectionDir = sanitizeSegment(f.section);
+    // dir is relative to the docs root; the file name is settled after conversion
+    const dir = syllabus ? '' : `materials/${cls.slug}/${sectionDir}`;
+    const baseName = syllabus ? `syllabus-${cls.slug}` : name.slice(0, name.length - (ext ? ext.length + 1 : 0));
+    const stamp = `${f.timemodified}:${f.filesize}`;
+    const prev = manifest.files[id];
+    const reuse = prev && prev.stamp === stamp && path.posix.dirname(prev.file) === path.posix.join('docs', dir || '.')
+      && fs.existsSync(path.join(paths.DOCS_DIR, prev.file.replace(/^docs\//, '')));
+    return { f, id, name, ext, syllabus, dir, baseName, stamp, file: reuse ? prev.file : null };
+  });
+
+  // Download what's new or changed, 4 at a time, into a scratch dir.
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'moodle_sync_'));
+  try {
+    const todo = plan.filter(p => !p.file);
+    stats.unchanged = plan.length - todo.length;
+    await mapLimit(todo, 4, async (p, i) => {
+      if (p.f.filesize > MOODLE_MAX_FILE_BYTES) { stats.skipped.push(p.f.filename); return; }
+      p.tmp = path.join(work, `${i}${p.ext ? '.' + p.ext : ''}`);
+      try { await moodle.downloadFile(paths.owner, p.f.fileurl, p.tmp); stats.downloaded++; }
+      catch (e) { console.error(`Moodle file download failed (${p.f.filename}):`, e.message); stats.failed.push(p.f.filename); p.tmp = null; }
+    });
+
+    // One LibreOffice run for all of this course's Office files.
+    const office = todo.filter(p => p.tmp && MOODLE_TO_PDF.has(p.ext));
+    const pdfs = office.length ? await convertManyToPdf(office.map(p => p.tmp), work) : new Map();
+    for (const p of todo.filter(p => p.tmp)) {
+      let src = p.tmp, ext = p.ext;
+      if (pdfs.get(p.tmp)) { src = pdfs.get(p.tmp); ext = 'pdf'; stats.converted++; }
+      else if (MOODLE_TO_PDF.has(p.ext)) console.error(`Moodle file conversion failed (${p.f.filename}), keeping the original`);
+      const rel = path.posix.join(p.dir, `${p.baseName}${ext ? '.' + ext : ''}`);
+      fs.mkdirSync(path.join(paths.DOCS_DIR, p.dir), { recursive: true });
+      moveFile(src, path.join(paths.DOCS_DIR, rel));
+      p.file = `docs/${rel}`;
+      manifest.files[p.id] = { stamp: p.stamp, file: p.file };
+    }
+  } finally {
+    fs.rmSync(work, { recursive: true, force: true });
+    fs.writeFileSync(moodleManifestPath(paths), JSON.stringify(manifest, null, 2));
+  }
 
   let syllabus = null;
-  const resources = [];
-  const homework = [];
-  for (let i = 0; i < moodleFiles.length; i++) {
-    const f = moodleFiles[i];
-    let buf;
-    try { buf = await moodle.downloadFile(paths.owner, f.fileurl); }
-    catch (e) { console.error(`Moodle file download failed (${f.filename}):`, e.message); continue; }
-
-    let filename = sanitizeSegment(f.filename);
-    let ext = path.extname(filename).slice(1).toLowerCase();
-    if (MOODLE_TO_PDF.has(ext)) {
-      try {
-        buf = await officeToPdf(buf, filename);
-        filename = filename.slice(0, -ext.length) + 'pdf';
-        ext = 'pdf';
-      } catch (e) { console.error(`Moodle file conversion failed (${f.filename}):`, e.message); }
-    }
-
-    if (i === syllabusIndex) {
-      const name = `syllabus-${safeSlug}.${ext || 'pdf'}`;
-      fs.writeFileSync(path.join(paths.DOCS_DIR, name), buf);
-      syllabus = `docs/${name}`;
-    } else {
-      const sectionDir = sanitizeSegment(f.section);
-      const destDir = path.join(paths.DOCS_DIR, 'materials', safeSlug, sectionDir);
-      fs.mkdirSync(destDir, { recursive: true });
-      fs.writeFileSync(path.join(destDir, filename), buf);
-      const entry = {
-        title: f.assignId ? `${f.module} — ${f.filename}` : f.filename,
-        file: `docs/materials/${safeSlug}/${sectionDir}/${filename}`,
-        notes: f.section || '',
-        moodleFileId: crypto.createHash('md5').update(f.fileurl.split('?')[0]).digest('hex').slice(0, 12),
-      };
-      if (f.assignId) homework.push({ assignId: f.assignId, ...entry });
-      else resources.push(entry);
-    }
+  const resources = [], homework = [];
+  for (const p of plan.filter(p => p.file)) {
+    if (p.syllabus) { syllabus = p.file; continue; }
+    const entry = {
+      title: p.f.assignId ? `${p.f.module} — ${p.f.filename}` : p.f.filename,
+      file: p.file,
+      notes: p.f.section || '',
+      moodleFileId: p.id,
+    };
+    if (p.f.assignId) homework.push({ assignId: p.f.assignId, ...entry });
+    else resources.push(entry);
   }
-  return { syllabus, resources, homework };
+  return { syllabus, resources, homework, stats };
 }
 
 // ── Course catalog ────────────────────────────────────────────
@@ -494,6 +536,23 @@ function loadCourseCatalog() {
   } catch (e) { console.warn('Could not load course catalog:', e.message); }
 }
 loadCourseCatalog();
+
+// Finds the catalog entry for a course code as Moodle writes it: section
+// letters, terms and missing spaces are ignored ("CS 321.A", "CS321-A_Fall",
+// "cs 321" → "CS 321"). Falls back to a code found in the course name.
+const CATALOG_CODE_RE = /([A-Za-zÇĞİÖŞÜçğıöşü]{2,6})\s*-?\s*(\d{3,4}[A-Za-z]?)/g;
+function catalogLookup(...texts) {
+  const index = catalogLookup.index || (catalogLookup.index = Object.fromEntries(
+    Object.values(COURSE_CATALOG).map(c => [c.code.replace(/\s+/g, '').toUpperCase(), c])));
+  for (const text of texts) {
+    for (const m of String(text || '').matchAll(CATALOG_CODE_RE)) {
+      const key = (m[1] + m[2]).toLocaleUpperCase('tr-TR').replace(/İ/g, 'I');
+      if (index[key]) return index[key];
+      if (index[key.slice(0, -1)] && /[A-Z]$/.test(key)) return index[key.slice(0, -1)]; // "CS321A" → "CS 321"
+    }
+  }
+  return null;
+}
 
 // ── Multer setups ─────────────────────────────────────────────
 const docsStorage = multer.diskStorage({
@@ -872,8 +931,12 @@ app.get('/api/moodle/courses', requireUser, async (req, res) => {
 app.post('/api/moodle/fetch', requireUser, async (req, res) => {
   const ids = Array.isArray(req.body.courseIds) ? req.body.courseIds.map(Number).filter(Number.isInteger) : [];
   if (!ids.length) return res.status(400).json({ error: 'No courses selected' });
-  try { res.json(await moodle.fetchCourses(req.paths.owner, ids, { grades: req.body.grades === true })); }
-  catch (e) { moodleFail(res, e); }
+  try {
+    const courses = await moodle.fetchCourses(req.paths.owner, ids, { grades: req.body.grades === true });
+    // Add the catalog's credits, faculty, prerequisites, … where it has the course.
+    for (const c of courses) c.catalog = catalogLookup(c.code, c.name);
+    res.json(courses);
+  } catch (e) { moodleFail(res, e); }
 });
 
 // Downloads one course's Moodle files into this user's docs/, picking the

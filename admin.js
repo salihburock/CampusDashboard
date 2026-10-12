@@ -1067,8 +1067,10 @@ async function runMoodleSync() {
 
   const counts = mergeMoodleCourses(fetched, grades);
 
+  let fileStats = null;
   if (files) {
     let filesSynced = 0;
+    fileStats = { downloaded: 0, unchanged: 0, converted: 0, skipped: 0 };
     for (const mc of fetched) {
       btn.textContent = t('msync.loading_files', { code: mc.code });
       try {
@@ -1078,7 +1080,12 @@ async function runMoodleSync() {
           body: JSON.stringify({ courseId: mc.moodleId, code: mc.code })
         });
         const data = await res.json();
-        if (res.ok) { mergeMoodleFiles(mc.moodleId, data); filesSynced++; }
+        if (res.ok) {
+          mergeMoodleFiles(mc.moodleId, data);
+          filesSynced++;
+          for (const k of ['downloaded', 'unchanged', 'converted']) fileStats[k] += data.stats[k];
+          fileStats.skipped += data.stats.skipped.length;
+        }
       } catch {}
     }
     counts.files = filesSynced;
@@ -1087,7 +1094,12 @@ async function runMoodleSync() {
   await saveData();
   closeMoodleSync();
   renderSections();
-  showToast(t('msync.done', counts));
+  let msg = t('msync.done', counts);
+  if (fileStats) {
+    msg += ' · ' + t('msync.files_done', fileStats);
+    if (fileStats.skipped) msg += ' · ' + t('msync.files_skipped', { n: fileStats.skipped });
+  }
+  showToast(msg);
 }
 
 // Attaches a /api/moodle/files result ({syllabus, resources}) to the course
@@ -1137,12 +1149,14 @@ function mergeMoodleCourses(fetched, withGrades) {
     // prefix of the Moodle short name ("CS321" ↔ "CS 321.A Fall 2026").
     let course = state.sections.flatMap(s => s.type === 'courses' ? s.items : [])
       .find(i => i.moodleId === mc.moodleId);
+    const cat = mc.catalog;
     if (!course) {
-      course = section.items.find(i => !i.moodleId && norm(i.code) && norm(mc.code).startsWith(norm(i.code)));
+      course = section.items.find(i => !i.moodleId && norm(i.code) &&
+        (norm(mc.code).startsWith(norm(i.code)) || (cat && norm(cat.code) === norm(i.code))));
     }
     if (!course) {
       course = JSON.parse(JSON.stringify(DEFAULT_ITEM.courses));
-      course.code = mc.code;
+      course.code = cat ? cat.code : mc.code;
       course.name = mc.name;
       section.items.push(course);
       added++;
@@ -1150,13 +1164,27 @@ function mergeMoodleCourses(fetched, withGrades) {
     course.moodleId = mc.moodleId;
     if (!course.name) course.name = mc.name;
 
-    // Homework: keep hand-added rows; replace synced rows, keeping any file
-    // or notes the user attached to them.
+    // Course catalog (credits, faculty, prerequisites, description): fills
+    // what is still empty, like picking the course from the code search.
+    if (cat) {
+      if (!course.credits) course.credits = cat.credits;
+      if (!course.faculty) course.faculty = cat.faculty;
+      course.prerequisite = cat.prerequisite;
+      course.corequisite = cat.corequisite;
+      if (!course.notes) {
+        course.notes = [cat.description,
+          cat.prerequisite && 'Prerequisite: ' + cat.prerequisite,
+          cat.corequisite && 'Corequisite: ' + cat.corequisite].filter(Boolean).join('\n');
+      }
+    }
+
+    // Homework: keep hand-added rows; replace synced rows (title, deadline,
+    // description, link), keeping any file or notes the user added to them.
     const old = new Map((course.homework || []).filter(h => h.moodleId).map(h => [h.moodleId, h]));
     const manual = (course.homework || []).filter(h => !h.moodleId);
     const synced = mc.homework.map(h => {
       const prev = old.get(h.moodleId);
-      return { ...h, file: prev ? prev.file || '' : '', notes: prev && prev.notes ? prev.notes : h.notes };
+      return { ...h, file: prev ? prev.file || '' : '', notes: prev ? prev.notes || '' : '' };
     });
     course.homework = [...manual, ...synced];
     deadlines += synced.length;

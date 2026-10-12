@@ -84,6 +84,8 @@ const _I18N = {
     'msync.fail': 'Moodle\'a ulaşılamadı',
     'msync.connect': 'Hesap sayfasından Moodle\'a bağlan →',
     'msync.done': '{courses} ders eşitlendi ({added} yeni), {deadlines} teslim tarihi',
+    'msync.files_done': 'Dosyalar: {downloaded} indirildi, {unchanged} değişmemiş, {converted} PDF\'e çevrildi',
+    'msync.files_skipped': '{n} büyük dosya atlandı',
     // admin
     'adm.title': 'Panoyu Düzenle',
     'adm.save': 'Kaydet',
@@ -122,6 +124,7 @@ const _I18N = {
     'app.exams': '📝 Sınavlar',
     'app.slides': '🎞 Slaytlar',
     'app.resources': '📎 Kaynaklar',
+    'app.open_moodle': 'Moodle\'da aç',
     'app.empty': 'Bu dönemde henüz içerik yok.',
     'app.total_credits': 'Toplam {n} kredi',
     // semesters
@@ -234,6 +237,8 @@ const _I18N = {
     'msync.fail': 'Could not reach Moodle',
     'msync.connect': 'Connect Moodle on the Account page →',
     'msync.done': 'Synced {courses} courses ({added} new), {deadlines} deadlines',
+    'msync.files_done': 'Files: {downloaded} downloaded, {unchanged} unchanged, {converted} converted to PDF',
+    'msync.files_skipped': '{n} large files skipped',
     // admin
     'adm.title': 'Edit Dashboard',
     'adm.save': 'Save',
@@ -272,6 +277,7 @@ const _I18N = {
     'app.exams': '📝 Exams',
     'app.slides': '🎞 Slides',
     'app.resources': '📎 Resources',
+    'app.open_moodle': 'Open on Moodle',
     'app.empty': 'No content in this semester yet.',
     'app.total_credits': '{n} total credits',
     // semesters
