@@ -1093,13 +1093,32 @@ async function runMoodleSync() {
 // Attaches a /api/moodle/files result ({syllabus, resources}) to the course
 // that was just synced. Resources carry a moodleFileId so a re-sync updates
 // them in place instead of duplicating; hand-added resources are untouched.
-function mergeMoodleFiles(moodleId, { syllabus, resources }) {
+//
+// Assignment files (homework) go onto the matching homework row's file,
+// unless the user attached a file of their own there. Rows hold one file,
+// so any further files, and files of assignments without a row (past ones),
+// are added as resources.
+function mergeMoodleFiles(moodleId, { syllabus, resources, homework }) {
   const course = state.sections.flatMap(s => s.type === 'courses' ? s.items : [])
     .find(i => i.moodleId === moodleId);
   if (!course) return;
   if (syllabus) course.syllabus = syllabus;
+
+  const extra = [];
+  const filled = new Set();
+  for (const h of homework || []) {
+    const row = (course.homework || []).find(r => r.moodleId === `assign:${h.assignId}`);
+    const ownFile = row && row.file && !row.file.startsWith('docs/materials/');
+    if (row && !ownFile && !filled.has(row)) {
+      row.file = h.file;
+      filled.add(row);
+    } else {
+      extra.push({ title: h.title, file: h.file, notes: h.notes, moodleFileId: h.moodleFileId });
+    }
+  }
+
   const manual = (course.resources || []).filter(r => !r.moodleFileId);
-  course.resources = [...manual, ...(resources || [])];
+  course.resources = [...manual, ...(resources || []), ...extra];
 }
 
 function mergeMoodleCourses(fetched, withGrades) {

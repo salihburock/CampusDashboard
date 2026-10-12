@@ -389,42 +389,75 @@ function sanitizeSegment(name) {
   return String(name || '').replace(/[^a-zA-Z0-9.\-_]/g, '_').replace(/^\.+/, '_') || 'file';
 }
 
+// Office files are turned into PDFs on sync so they open in the dashboard's
+// PDF viewer. Uses the same LibreOffice conversion as /conversion
+// (convertFile); if it fails, the original file is kept.
+const MOODLE_TO_PDF = new Set(['doc', 'docx', 'odt', 'rtf', 'ppt', 'pptx', 'odp']);
+
+async function officeToPdf(buf, filename) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'moodle_conv_'));
+  try {
+    const src = path.join(dir, filename);
+    fs.writeFileSync(src, buf);
+    return fs.readFileSync(await convertFile(src, 'pdf', dir));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // Lists a course's Moodle files, asks the LLM agent which one is the
-// syllabus and what folder slug to use, downloads everything, and returns
-// { syllabus: "docs/..." | null, resources: [{name, url, moodleFileId}] }
-// for the frontend to merge into the course item.
+// syllabus and what folder slug to use, downloads everything (converting
+// Office files to PDF), and returns
+//   { syllabus: "docs/..." | null,
+//     resources: [{title, file, notes, moodleFileId}],
+//     homework:  [{assignId, title, file, moodleFileId}] }
+// for the frontend to merge into the course item. homework holds the files
+// attached to assignments, so they can go onto the matching homework row.
 async function syncMoodleFiles(paths, code, moodleFiles) {
-  if (!moodleFiles.length) return { syllabus: null, resources: [] };
+  if (!moodleFiles.length) return { syllabus: null, resources: [], homework: [] };
 
   const { slug, syllabusIndex } = await classifyCourseFilesWithLlm(code, moodleFiles.map(f => f.filename));
   const safeSlug = /^[a-z0-9-]+$/.test(slug) ? slug : regexFallbackClassify(code, []).slug;
 
   let syllabus = null;
   const resources = [];
+  const homework = [];
   for (let i = 0; i < moodleFiles.length; i++) {
     const f = moodleFiles[i];
     let buf;
     try { buf = await moodle.downloadFile(paths.owner, f.fileurl); }
     catch (e) { console.error(`Moodle file download failed (${f.filename}):`, e.message); continue; }
 
+    let filename = sanitizeSegment(f.filename);
+    let ext = path.extname(filename).slice(1).toLowerCase();
+    if (MOODLE_TO_PDF.has(ext)) {
+      try {
+        buf = await officeToPdf(buf, filename);
+        filename = filename.slice(0, -ext.length) + 'pdf';
+        ext = 'pdf';
+      } catch (e) { console.error(`Moodle file conversion failed (${f.filename}):`, e.message); }
+    }
+
     if (i === syllabusIndex) {
-      fs.writeFileSync(path.join(paths.DOCS_DIR, `syllabus-${safeSlug}.pdf`), buf);
-      syllabus = `docs/syllabus-${safeSlug}.pdf`;
+      const name = `syllabus-${safeSlug}.${ext || 'pdf'}`;
+      fs.writeFileSync(path.join(paths.DOCS_DIR, name), buf);
+      syllabus = `docs/${name}`;
     } else {
       const sectionDir = sanitizeSegment(f.section);
       const destDir = path.join(paths.DOCS_DIR, 'materials', safeSlug, sectionDir);
       fs.mkdirSync(destDir, { recursive: true });
-      const filename = sanitizeSegment(f.filename);
       fs.writeFileSync(path.join(destDir, filename), buf);
-      resources.push({
-        title: f.filename,
+      const entry = {
+        title: f.assignId ? `${f.module} — ${f.filename}` : f.filename,
         file: `docs/materials/${safeSlug}/${sectionDir}/${filename}`,
         notes: f.section || '',
         moodleFileId: crypto.createHash('md5').update(f.fileurl.split('?')[0]).digest('hex').slice(0, 12),
-      });
+      };
+      if (f.assignId) homework.push({ assignId: f.assignId, ...entry });
+      else resources.push(entry);
     }
   }
-  return { syllabus, resources };
+  return { syllabus, resources, homework };
 }
 
 // ── Course catalog ────────────────────────────────────────────
