@@ -124,11 +124,37 @@ const CONTAINERS = {
 // by 2" on e.g. 641x361); round down by one pixel where needed.
 const EVEN = 'scale=trunc(iw/2)*2:trunc(ih/2)*2';
 
-function videoEncodeArgs(enc) {
+// H.264 on the GPU when there is one: NVIDIA NVENC, else Intel QuickSync.
+// Picked once by test-encoding a frame; VIDEO_HWENC=none (or an encoder
+// name) in .env overrides the choice.
+let hwEncoder;
+function h264HwEncoder() {
+  if (!hwEncoder) hwEncoder = (async () => {
+    const want = (process.env.VIDEO_HWENC || 'auto').toLowerCase();
+    if (want === 'none') return null;
+    for (const enc of want === 'auto' ? ['h264_nvenc', 'h264_qsv'] : [want]) {
+      try {
+        await run('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc=size=256x256:rate=1', '-frames:v', '1',
+          '-c:v', enc, '-pix_fmt', enc === 'h264_qsv' ? 'nv12' : 'yuv420p', '-f', 'null', '-'], 20000);
+        console.log(`Video conversion: using ${enc}`);
+        return enc;
+      } catch {}
+    }
+    return null;
+  })();
+  return hwEncoder;
+}
+
+function videoEncodeArgs(enc, hw) {
   switch (enc) {
-    case 'h264':  return ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-vf', EVEN];
+    case 'h264':
+      if (hw === 'h264_nvenc') return ['-c:v', 'h264_nvenc', '-preset', 'p4', '-rc', 'vbr', '-cq', '23', '-b:v', '0', '-pix_fmt', 'yuv420p', '-vf', EVEN];
+      if (hw === 'h264_qsv')   return ['-c:v', 'h264_qsv', '-preset', 'faster', '-global_quality', '23', '-pix_fmt', 'nv12', '-vf', EVEN];
+      return ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-vf', EVEN];
     case 'mpeg4': return ['-c:v', 'mpeg4', '-q:v', '3', '-pix_fmt', 'yuv420p', '-vf', EVEN];
-    case 'vp9':   return ['-c:v', 'libvpx-vp9', '-crf', '32', '-b:v', '0', '-deadline', 'good', '-cpu-used', '4',
+    // "realtime" + cpu-used 8 is several times faster than the default
+    // "good" quality mode, at a modest size cost.
+    case 'vp9':   return ['-c:v', 'libvpx-vp9', '-crf', '32', '-b:v', '0', '-deadline', 'realtime', '-cpu-used', '8',
                           '-row-mt', '1', '-pix_fmt', 'yuv420p', '-vf', EVEN];
   }
 }
@@ -148,12 +174,13 @@ function canCopyAudio(target, a) {
 }
 
 // Picks stream copy or re-encode per stream. forceEncode re-encodes
-// everything (used as a retry when a copy turns out not to work).
-function videoArgs(info, target, forceEncode) {
+// everything (used as a retry when a copy turns out not to work); hw is
+// the hardware H.264 encoder to use, if any.
+function videoArgs(info, target, forceEncode, hw) {
   const c = CONTAINERS[target];
   const args = ['-map', '0:v:0'];
   if (info.audio) args.push('-map', '0:a:0');
-  args.push(...(!forceEncode && canCopyVideo(target, info.video) ? ['-c:v', 'copy'] : videoEncodeArgs(c.venc)));
+  args.push(...(!forceEncode && canCopyVideo(target, info.video) ? ['-c:v', 'copy'] : videoEncodeArgs(c.venc, hw)));
   if (info.video.codec_name === 'hevc' && (target === 'mp4' || target === 'mov')) args.push('-tag:v', 'hvc1');
   if (info.audio) {
     args.push(...(!forceEncode && canCopyAudio(target, info.audio) ? ['-c:a', 'copy'] : c.aenc));
@@ -191,12 +218,14 @@ async function convertMedia(inputPath, srcExt, targetExt, outputPath) {
   }
   if (!CONTAINERS[targetExt]) throw new ConversionError(`Cannot convert to .${targetExt}`);
 
-  try {
-    await ff(videoArgs(info, targetExt, false));
-  } catch (e) {
-    // A copied stream can still be rejected by the muxer (odd timestamps,
-    // unusual profiles); encoding everything is slower but reliable.
-    await ff(videoArgs(info, targetExt, true));
+  // A copied stream can still be rejected by the muxer (odd timestamps,
+  // unusual profiles), and a GPU encoder can refuse a size or format; each
+  // retry is slower but more likely to work.
+  const hw = await h264HwEncoder();
+  const attempts = [[false, hw], [true, hw], ...(hw ? [[true, null]] : [])];
+  for (let i = 0; i < attempts.length; i++) {
+    try { return await ff(videoArgs(info, targetExt, ...attempts[i])); }
+    catch (e) { if (i === attempts.length - 1) throw e; }
   }
 }
 
@@ -273,6 +302,31 @@ async function convertDocument(inputPath, srcExt, targetExt, outputPath) {
   }
 }
 
+// Converts many Office files to PDF with one LibreOffice start (starting it
+// is most of the time for a typical file). Resolves to a Map of input path
+// → PDF path in outDir, or null for files that didn't convert. Input base
+// names must be unique.
+async function convertManyToPdf(inputPaths, outDir) {
+  const result = new Map(inputPaths.map(p => [p, null]));
+  const pdfFor = p => path.join(outDir, path.basename(p, path.extname(p)) + '.pdf');
+  for (let i = 0; i < inputPaths.length; i += 20) {
+    const chunk = inputPaths.slice(i, i + 20);
+    try {
+      await queueSoffice(() => run('soffice', [
+        `-env:UserInstallation=${LO_PROFILE}`, '--headless', '--norestore',
+        '--convert-to', 'pdf', '--outdir', outDir, ...chunk,
+      ], 10 * 60000));
+    } catch {} // a crash on one file stops the rest of the chunk; retried below
+    for (const p of chunk) if (fs.existsSync(pdfFor(p))) result.set(p, pdfFor(p));
+  }
+  // Anything a batch left behind gets one try on its own.
+  for (const [p, out] of result) {
+    if (out) continue;
+    try { result.set(p, await convertFile(p, 'pdf', outDir)); } catch {}
+  }
+  return result;
+}
+
 // ── Entry point ───────────────────────────────────────────────
 
 async function convertFile(inputPath, targetExt, outDir) {
@@ -296,4 +350,4 @@ async function convertFile(inputPath, targetExt, outDir) {
   return outputPath;
 }
 
-module.exports = { SUPPORTED_CONVERSIONS, ConversionError, convertFile };
+module.exports = { SUPPORTED_CONVERSIONS, ConversionError, convertFile, convertManyToPdf };

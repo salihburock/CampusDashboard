@@ -96,13 +96,21 @@ function renderCourseCard(course, openPdf) {
 
       const info = el("div", "course-row-info");
       info.appendChild(el("span", "course-row-title", hw.title));
-      if (hw.notes) info.appendChild(el("span", "course-row-sub", hw.notes));
+      // description: the assignment text from Moodle
+      if (hw.notes || hw.description) info.appendChild(el("span", "course-row-sub", hw.notes || hw.description));
 
       const actions = el("div", "course-row-actions");
       actions.appendChild(el("span", `deadline-badge ${urg}`,
         (urg === "overdue" ? "⚠ " : "🗓 ") + deadlineLabel(days) + " · " + formatDate(hw.deadline)
       ));
       if (hw.file) actions.appendChild(pdfBtn(hw.file, hw.title, openPdf));
+      if (hw.url) {
+        // Opens the assignment on Moodle, e.g. to submit it.
+        const link = el("a", "pdf-btn", "🔗");
+        link.href = hw.url; link.target = "_blank"; link.rel = "noopener";
+        link.title = t('app.open_moodle');
+        actions.appendChild(link);
+      }
 
       row.appendChild(info);
       row.appendChild(actions);
