@@ -23,6 +23,7 @@ const ALLOWED_FUNCTIONS = new Set([
   'core_calendar_get_action_events_by_timesort',
   'gradereport_user_get_grade_items',
   'core_course_get_contents',
+  'mod_assign_get_assignments',
 ]);
 
 const MOODLE_URL = (process.env.MOODLE_URL || '').trim().replace(/\/+$/, '');
@@ -270,19 +271,27 @@ async function fetchCourses(owner, courseIds, { grades = false } = {}) {
 }
 
 // Flat list of downloadable files across all of a course's sections/modules
-// -- { section, module, filename, fileurl, filesize, mimetype }. fileurl is
-// a Moodle pluginfile URL that still needs the token appended to be fetched
-// (see downloadFile).
+// -- { section, module, filename, fileurl, filesize, mimetype, assignId? }.
+// fileurl is a Moodle pluginfile URL that still needs the token appended to
+// be fetched (see downloadFile).
+//
+// Files attached to an assignment's description (the homework PDF itself)
+// are not part of core_course_get_contents, so they come from
+// mod_assign_get_assignments and carry the assignment's id (assignId), which
+// matches the "assign:<id>" moodleId of its homework row.
 async function courseFiles(owner, courseId) {
   const conn = requireConn(owner);
   const sections = await call(conn.token, 'core_course_get_contents', { courseid: courseId });
   const files = [];
+  const assignSection = {};
   for (const sec of sections || []) {
+    const section = decodeEntities(sec.name || 'General');
     for (const mod of sec.modules || []) {
+      if (mod.modname === 'assign') assignSection[mod.instance] = section;
       for (const f of mod.contents || []) {
         if (f.type !== 'file' || !f.fileurl) continue;
         files.push({
-          section: decodeEntities(sec.name || 'General'),
+          section,
           module: decodeEntities(mod.name || ''),
           filename: decodeEntities(f.filename || ''),
           fileurl: f.fileurl,
@@ -290,6 +299,33 @@ async function courseFiles(owner, courseId) {
           mimetype: f.mimetype || '',
         });
       }
+    }
+  }
+
+  let assignments = [];
+  try {
+    const res = await call(conn.token, 'mod_assign_get_assignments', { courseids: [courseId] });
+    assignments = (res.courses && res.courses[0] && res.courses[0].assignments) || [];
+  } catch (e) {
+    if (e.isAuthError) throw e; // otherwise: no assignment access, keep the rest
+  }
+  const seen = new Set(files.map(f => f.fileurl));
+  for (const a of assignments) {
+    // introattachments: files added under "Additional files"; introfiles:
+    // files embedded in the description (images are skipped).
+    const attached = [...(a.introattachments || []), ...(a.introfiles || [])];
+    for (const f of attached) {
+      if (!f.fileurl || seen.has(f.fileurl) || /^image\//.test(f.mimetype || '')) continue;
+      seen.add(f.fileurl);
+      files.push({
+        section: assignSection[a.id] || 'Assignments',
+        module: decodeEntities(a.name || ''),
+        filename: decodeEntities(f.filename || ''),
+        fileurl: f.fileurl,
+        filesize: f.filesize || 0,
+        mimetype: f.mimetype || '',
+        assignId: a.id,
+      });
     }
   }
   return files;
