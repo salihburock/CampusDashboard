@@ -262,13 +262,24 @@ function homeworkRows(assignments, events) {
   const rows = new Map(events);
   for (const a of assignments) {
     const id = `assign:${a.id}`;
-    if (!a.duedate || (a.duedate < now - 86400 && !events.has(id))) continue;
+    // Some Moodle versions key the to-do event by the course module id
+    // instead of the assignment id; match those by their view.php?id=<cmid>
+    // link so the assignment doesn't show up twice.
+    let ev = events.get(id);
+    if (!ev && a.cmid) {
+      for (const [k, e] of events) {
+        if (k.startsWith('assign:') && /[?&]id=(\d+)/.exec(e.url || '')?.[1] === String(a.cmid)) {
+          ev = e; rows.delete(k); break;
+        }
+      }
+    }
+    if (!a.duedate || (a.duedate < now - 86400 && !ev)) continue;
     rows.set(id, {
       moodleId: id,
       title: decodeEntities(a.name || ''),
       deadline: ymd(a.duedate),
       description: stripHtml(a.intro, 300),
-      url: (events.get(id) || {}).url || (a.cmid ? `${MOODLE_URL}/mod/assign/view.php?id=${a.cmid}` : ''),
+      url: (ev || {}).url || (a.cmid ? `${MOODLE_URL}/mod/assign/view.php?id=${a.cmid}` : ''),
     });
   }
   return [...rows.values()].sort((x, y) => x.deadline.localeCompare(y.deadline));
