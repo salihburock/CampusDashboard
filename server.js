@@ -135,6 +135,26 @@ function displayNameOf(user) {
   return (user && user.displayName) || (user && user.username) || '';
 }
 
+// ── Agent token ───────────────────────────────────────────────
+// Lets scripts/agent.js, run on this machine over SSH, use the API as
+// AGENT_USER without a password. Off unless AGENT_TOKEN and AGENT_USER are
+// set in .env, and only accepted on direct loopback connections. Runs before
+// the session middleware, which skips requests that already carry a session.
+const AGENT_TOKEN = process.env.AGENT_TOKEN || '';
+const AGENT_USER  = process.env.AGENT_USER  || '';
+const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+app.use((req, res, next) => {
+  const auth = req.get('authorization') || '';
+  if (!auth.startsWith('Bearer ')) return next();
+  const given = Buffer.from(auth.slice(7)), want = Buffer.from(AGENT_TOKEN);
+  const ok = AGENT_TOKEN && AGENT_USER && findUser(AGENT_USER)
+    && LOOPBACK.has(req.socket.remoteAddress) && !req.get('x-forwarded-for')
+    && given.length === want.length && crypto.timingSafeEqual(given, want);
+  if (!ok) return res.status(401).json({ error: 'Invalid agent token' });
+  req.session = { user: AGENT_USER };
+  next();
+});
+
 // ── Session setup ─────────────────────────────────────────────
 app.use(cookieParser());
 app.use(session({
