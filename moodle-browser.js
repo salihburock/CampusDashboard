@@ -444,4 +444,10 @@ async function syncAllCourses(onCourse, onProgress = () => {}) {
   }, onProgress);
 }
 
-module.exports = { MoodleBrowserError, syncAllCourses, withSession, listEnrolledCourses, discoverCourseFiles };
+// Signs in again (only if the saved session has expired) so plain HTTP
+// requests (moodle-http.js) have a fresh session cookie.
+async function refreshSession() {
+  return withSession(async () => {});
+}
+
+module.exports = { MoodleBrowserError, syncAllCourses, withSession, refreshSession, listEnrolledCourses, discoverCourseFiles };

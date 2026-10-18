@@ -20,6 +20,7 @@ if (!process.env.SESSION_SECRET) {
 
 const moodle = require('./moodle'); // reads MOODLE_URL, so after .env is loaded
 const moodleBrowser = require('./moodle-browser');
+const moodleHttp = require('./moodle-http');
 const { SUPPORTED_CONVERSIONS, ConversionError, convertFile, convertManyToPdf } = require('./converter');
 
 const app  = express();
@@ -1143,10 +1144,139 @@ app.get('/api/moodle/browser-sync', requireUser, (req, res) => {
 // run takes a minute or two, longer than a proxy will hold a request open.
 app.post('/api/moodle/browser-sync', requireUser, (req, res) => {
   if (!browserSyncAvailable(req)) return res.status(403).json({ error: 'Moodle sync is not set up for this account' });
-  if (browserSync.running) return res.status(409).json({ error: 'A sync is already running', ...browserSync });
+  if (browserSync.running || gradeCheckRunning) return res.status(409).json({ error: 'A sync is already running', ...browserSync });
   browserSyncAllCourses();
   res.status(202).json({ started: true });
 });
+
+// ── Grade watch ──────────────────────────────────────────────────
+// Checks the grade report of every course that has a Moodle id, over plain
+// HTTP with the saved session (one request per course), updates the grades
+// shown on the dashboard and sends a Telegram message when a grade is added
+// or changes. Hourly when MOODLE_GRADE_WATCH=on; the first run only records
+// the current grades.
+function gradeWatchPath(owner) { return path.join(__dirname, 'userdata', owner, 'moodle-grades.json'); }
+
+function moodleUserId(owner) {
+  try { return JSON.parse(fs.readFileSync(path.join(__dirname, 'userdata', owner, 'moodle.json'), 'utf8')).userId || null; }
+  catch { return null; }
+}
+
+async function sendTelegram(text) {
+  const token = process.env.TELEGRAM_BOT_TOKEN, chat = process.env.TELEGRAM_CHAT_ID;
+  if (!token || !chat) return false;
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chat, text, disable_web_page_preview: true }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) console.error('[grades] Telegram send failed:', res.status, (await res.text()).slice(0, 200));
+    return res.ok;
+  } catch (e) {
+    console.error('[grades] Telegram send failed:', e.message);
+    return false;
+  }
+}
+
+function describeGrade(g) {
+  let s = g.grade;
+  if (g.range) s += ` (out of ${g.range})`;
+  if (g.percentage && g.percentage !== '-') s += `, ${g.percentage}`;
+  return s;
+}
+
+let gradeCheckRunning = false;
+async function checkGrades() {
+  if (gradeCheckRunning || browserSync.running) return { skipped: 'busy' };
+  gradeCheckRunning = true;
+  const owner = BROWSER_SYNC_OWNER;
+  let state;
+  try { state = JSON.parse(fs.readFileSync(gradeWatchPath(owner), 'utf8')); } catch { state = { courses: {} }; }
+  try {
+    const paths = getPathsForOwner(owner);
+    const data = JSON.parse(fs.readFileSync(paths.DATA_FILE, 'utf8'));
+    const courses = (data.sections || []).flatMap(s => s.type === 'courses' ? s.items : []).filter(c => c.moodleId);
+    if (!courses.length) return { skipped: 'no courses with a Moodle id' };
+    const userId = moodleUserId(owner);
+
+    const results = {};
+    let signedIn = false;
+    for (const c of courses) {
+      try {
+        results[c.moodleId] = await moodleHttp.courseGrades(c.moodleId, userId);
+      } catch (e) {
+        if (!(e instanceof moodleHttp.SessionExpiredError)) {
+          console.error(`[grades] ${c.code}: ${e.message}`);
+          continue;
+        }
+        if (signedIn) throw e;
+        console.log('[grades] session expired, signing in again');
+        await moodleBrowser.refreshSession();
+        signedIn = true;
+        results[c.moodleId] = await moodleHttp.courseGrades(c.moodleId, userId);
+      }
+    }
+    if (!Object.keys(results).length) throw new Error('could not read any grade report');
+
+    const firstRun = !Object.keys(state.courses).length;
+    const changes = [];
+    for (const c of courses) {
+      const now = results[c.moodleId], before = state.courses[c.moodleId];
+      if (!now || !before) continue;
+      const prev = new Map(before.map(g => [g.item, g]));
+      for (const g of now) {
+        const p = prev.get(g.item);
+        if (!p) changes.push(`📊 ${c.code} — ${g.item}: ${describeGrade(g)}`);
+        else if (p.grade !== g.grade) changes.push(`✏️ ${c.code} — ${g.item}: ${p.grade} → ${describeGrade(g)}`);
+        else if (g.feedback && g.feedback !== p.feedback) changes.push(`💬 ${c.code} — ${g.item}: new feedback: ${g.feedback}`);
+      }
+    }
+
+    for (const [id, grades] of Object.entries(results)) state.courses[id] = grades;
+    const recovered = state.lastError;
+    Object.assign(state, { lastError: null, checkedAt: Date.now() });
+    fs.writeFileSync(gradeWatchPath(owner), JSON.stringify(state, null, 2));
+
+    // Show them on the dashboard too; re-read so concurrent edits are kept.
+    const fresh = JSON.parse(fs.readFileSync(paths.DATA_FILE, 'utf8'));
+    let dataChanged = false;
+    for (const c of (fresh.sections || []).flatMap(s => s.type === 'courses' ? s.items : [])) {
+      const grades = results[c.moodleId];
+      if (grades && JSON.stringify(grades) !== JSON.stringify(c.grades || [])) { c.grades = grades; dataChanged = true; }
+    }
+    if (dataChanged) fs.writeFileSync(paths.DATA_FILE, JSON.stringify(fresh, null, 2));
+
+    const total = Object.values(results).reduce((n, g) => n + g.length, 0);
+    console.log(`[grades] checked ${Object.keys(results).length} courses, ${total} grades, ${changes.length} changes`);
+    if (changes.length) await sendTelegram(['New on Moodle:', ...changes].join('\n'));
+    else if (firstRun) await sendTelegram(`Grade watch is on: ${total} grades in ${courses.length} courses recorded. You'll get a message here when a grade is added or changes.`);
+    else if (recovered) await sendTelegram('Grade watch is working again.');
+    return { courses: Object.keys(results).length, grades: total, changes };
+  } catch (e) {
+    console.error('[grades] check failed:', e.message);
+    if (state.lastError !== e.message) {
+      await sendTelegram(`⚠️ Grade watch couldn't check Moodle: ${e.message}. It will try again next hour.`);
+      state.lastError = e.message;
+      try { fs.writeFileSync(gradeWatchPath(owner), JSON.stringify(state, null, 2)); } catch {}
+    }
+    return { error: e.message };
+  } finally {
+    gradeCheckRunning = false;
+  }
+}
+
+app.post('/api/moodle/grades/check', requireUser, async (req, res) => {
+  if (!browserSyncAvailable(req)) return res.status(403).json({ error: 'Moodle sync is not set up for this account' });
+  res.json(await checkGrades());
+});
+
+// Hourly, on the hour; never at startup, so restarts don't add requests.
+if (process.env.MOODLE_GRADE_WATCH === 'on' && process.env.MOODLE_USERNAME && process.env.MOODLE_PASSWORD) {
+  const msToNextHour = 3600000 - (Date.now() % 3600000);
+  setTimeout(() => { checkGrades(); setInterval(checkGrades, 3600000); }, msToNextHour);
+}
 
 app.get('/api/conversion/formats', (req, res) => res.json(SUPPORTED_CONVERSIONS));
 
