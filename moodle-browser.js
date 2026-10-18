@@ -162,7 +162,7 @@ async function login(page) {
 
     const approving = await approvingLoc.isVisible().catch(() => false);
     if (approving) {
-      let code = await page.locator('#idRichContext_DisplaySign, [data-testid="displaySign"]').first().textContent().catch(() => null);
+      let code = await page.locator('#idRichContext_DisplaySign, [data-testid="displaySign"]').first().textContent({ timeout: 2000 }).catch(() => null);
       if (!code) {
         const bodyText = await page.locator('body').textContent().catch(() => '');
         const m = bodyText.match(/Enter the number if prompted\.?\s*(\d{2})/) || bodyText.match(/\b(\d{2})\b\s*\n?\s*Didn/);
@@ -190,7 +190,7 @@ async function login(page) {
       continue;
     }
 
-    const errorText = await errorLoc.textContent().catch(() => null);
+    const errorText = await errorLoc.textContent({ timeout: 1000 }).catch(() => null);
     if (errorText) throw new MoodleBrowserError(`Login rejected: ${errorText.trim()}`, 'LOGIN_FAILED');
 
     // Anything else at this point ("pick an account", unexpected screen)
@@ -254,7 +254,7 @@ const SELECTORS = {
 // whole element picks that up too, corrupting the real filename (matches
 // the OzU extension's own childNodes[0] workaround for the same markup).
 async function firstTextNode(locator) {
-  const text = await locator.evaluate((el) => (el.childNodes[0] && el.childNodes[0].textContent) || el.textContent).catch(() => null);
+  const text = await locator.evaluate((el) => (el.childNodes[0] && el.childNodes[0].textContent) || el.textContent, undefined, { timeout: 1000 }).catch(() => null);
   return text ? text.trim() : null;
 }
 
@@ -299,7 +299,7 @@ async function discoverCourseFiles(context, page, courseId) {
   for (const section of sections) {
     let sectionName = 'General';
     for (const sel of SELECTORS.sectionTitle) {
-      const t = await section.locator(sel).first().textContent().catch(() => null);
+      const t = await section.locator(sel).first().textContent({ timeout: 1000 }).catch(() => null);
       if (t && t.trim()) { sectionName = t.trim(); break; }
     }
 
