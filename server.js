@@ -473,7 +473,11 @@ async function syncMoodleFiles(paths, code, moodleFiles, downloadFile = (owner, 
     const baseName = syllabus ? `syllabus-${cls.slug}` : name.slice(0, name.length - (ext ? ext.length + 1 : 0));
     const stamp = `${f.timemodified}:${f.filesize}`;
     const prev = manifest.files[id];
+    // The name must match too (not just stamp/folder), or a rename (e.g. a
+    // corrected filename) would never replace the copy from an earlier sync.
+    const expected = ext ? [`${baseName}.${ext}`, `${baseName}.pdf`] : [baseName];
     const reuse = prev && prev.stamp === stamp && path.posix.dirname(prev.file) === path.posix.join('docs', dir || '.')
+      && expected.includes(path.posix.basename(prev.file))
       && fs.existsSync(path.join(paths.DOCS_DIR, prev.file.replace(/^docs\//, '')));
     return { f, id, name, ext, syllabus, dir, baseName, stamp, file: reuse ? prev.file : null };
   });

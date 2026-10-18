@@ -258,6 +258,24 @@ async function firstTextNode(locator) {
   return text ? text.trim() : null;
 }
 
+// A resource link's title isn't its filename ("L2 - Metrics" for
+// L2-key-metrics.pdf). mod/resource/view.php redirects to the pluginfile
+// URL, whose last path segment (or Content-Disposition) is the real name,
+// extension included.
+function realFilename(res) {
+  const cd = res.headers()['content-disposition'] || '';
+  const m = cd.match(/filename\*=UTF-8''([^;]+)/i) || cd.match(/filename="?([^";]+)"?/i);
+  let name = m ? m[1] : '';
+  if (!name) {
+    try {
+      const u = new URL(res.url());
+      if (u.pathname.includes('/pluginfile.php/')) name = u.pathname.split('/').pop();
+    } catch {}
+  }
+  try { name = decodeURIComponent(name); } catch {}
+  return /\.[A-Za-z0-9]{1,8}$/.test(name) ? name : null;
+}
+
 async function findAllText(page, selectorList) {
   for (const sel of selectorList) {
     const count = await page.locator(sel).count();
@@ -354,6 +372,8 @@ async function discoverCourseFiles(context, page, courseId) {
       const mod = res.headers()['last-modified'];
       if (len) f.filesize = Number(len) || 0;
       if (mod) f.timemodified = Math.floor(new Date(mod).getTime() / 1000) || 0;
+      const real = realFilename(res);
+      if (real) f.filename = real;
     } catch {}
   }));
 
