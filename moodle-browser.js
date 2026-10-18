@@ -249,6 +249,15 @@ const SELECTORS = {
   assignments: '.activity.assign a, .modtype_assign a',
 };
 
+// Moodle appends a hidden accessibility hint to .instancename/.fp-filename
+// ("File", "Folder", …) as a sibling text/span node; textContent() on the
+// whole element picks that up too, corrupting the real filename (matches
+// the OzU extension's own childNodes[0] workaround for the same markup).
+async function firstTextNode(locator) {
+  const text = await locator.evaluate((el) => (el.childNodes[0] && el.childNodes[0].textContent) || el.textContent).catch(() => null);
+  return text ? text.trim() : null;
+}
+
 async function findAllText(page, selectorList) {
   for (const sel of selectorList) {
     const count = await page.locator(sel).count();
@@ -279,10 +288,9 @@ async function discoverCourseFiles(context, page, courseId) {
     const resourceLinks = await section.locator(SELECTORS.resources).all();
     for (const link of resourceLinks) {
       const href = await link.getAttribute('href').catch(() => null);
-      const name = await link.locator('.instancename').first().textContent().catch(() => null)
-        || await link.textContent().catch(() => '');
+      const name = await firstTextNode(link.locator('.instancename').first()) || await firstTextNode(link);
       if (!href || !name) continue;
-      files.push({ section: sectionName, module: name.trim(), filename: name.trim(), fileurl: href, filesize: 0, timemodified: 0, mimetype: '' });
+      files.push({ section: sectionName, module: name, filename: name, fileurl: href, filesize: 0, timemodified: 0, mimetype: '' });
     }
 
     const folderLinks = await section.locator(SELECTORS.folders).all();
@@ -294,10 +302,9 @@ async function discoverCourseFiles(context, page, courseId) {
         const fileLinks = await page.locator('.fp-filename-icon a, .file-picker a').all();
         for (const fl of fileLinks) {
           const fHref = await fl.getAttribute('href').catch(() => null);
-          const fName = await fl.locator('.fp-filename').first().textContent().catch(() => null)
-            || await fl.textContent().catch(() => '');
+          const fName = await firstTextNode(fl.locator('.fp-filename').first()) || await firstTextNode(fl);
           if (!fHref || !fName) continue;
-          files.push({ section: sectionName, module: fName.trim(), filename: fName.trim(), fileurl: fHref, filesize: 0, timemodified: 0, mimetype: '' });
+          files.push({ section: sectionName, module: fName, filename: fName, fileurl: fHref, filesize: 0, timemodified: 0, mimetype: '' });
         }
       } catch (e) {
         console.warn(`[moodle-browser] folder scrape failed (${href}):`, e.message);
@@ -314,9 +321,9 @@ async function discoverCourseFiles(context, page, courseId) {
   const assignHrefs = [];
   for (const link of assignLinks) {
     const href = await link.getAttribute('href').catch(() => null);
-    const name = await link.locator('.instancename').first().textContent().catch(() => null) || await link.textContent().catch(() => '');
+    const name = await firstTextNode(link.locator('.instancename').first()) || await firstTextNode(link);
     const idMatch = href && href.match(/[?&]id=(\d+)/);
-    if (href && idMatch) assignHrefs.push({ href, id: idMatch[1], name: (name || '').trim() });
+    if (href && idMatch) assignHrefs.push({ href, id: idMatch[1], name: name || '' });
   }
   for (const a of assignHrefs) {
     try {
