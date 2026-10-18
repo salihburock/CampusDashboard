@@ -19,6 +19,7 @@ if (!process.env.SESSION_SECRET) {
 }
 
 const moodle = require('./moodle'); // reads MOODLE_URL, so after .env is loaded
+const moodleBrowser = require('./moodle-browser');
 const { SUPPORTED_CONVERSIONS, ConversionError, convertFile, convertManyToPdf } = require('./converter');
 
 const app  = express();
@@ -424,7 +425,7 @@ const md5 = s => crypto.createHash('md5').update(s).digest('hex');
 //     stats: { downloaded, unchanged, converted, skipped: [names], failed: [names] } }
 // for the frontend to merge into the course item. homework holds the files
 // of assignments, so they can go onto the matching homework row.
-async function syncMoodleFiles(paths, code, moodleFiles) {
+async function syncMoodleFiles(paths, code, moodleFiles, downloadFile = (owner, url, dest) => moodle.downloadFile(owner, url, dest)) {
   const stats = { downloaded: 0, unchanged: 0, converted: 0, skipped: [], failed: [] };
   if (!moodleFiles.length) return { syllabus: null, resources: [], homework: [], stats };
   const manifest = loadMoodleManifest(paths);
@@ -465,7 +466,7 @@ async function syncMoodleFiles(paths, code, moodleFiles) {
     await mapLimit(todo, 4, async (p, i) => {
       if (p.f.filesize > MOODLE_MAX_FILE_BYTES) { stats.skipped.push(p.f.filename); return; }
       p.tmp = path.join(work, `${i}${p.ext ? '.' + p.ext : ''}`);
-      try { await moodle.downloadFile(paths.owner, p.f.fileurl, p.tmp); stats.downloaded++; }
+      try { await downloadFile(paths.owner, p.f.fileurl, p.tmp); stats.downloaded++; }
       catch (e) { console.error(`Moodle file download failed (${p.f.filename}):`, e.message); stats.failed.push(p.f.filename); p.tmp = null; }
     });
 
@@ -952,6 +953,133 @@ app.post('/api/moodle/files', requireUser, async (req, res) => {
     res.json(await syncMoodleFiles(req.paths, code, files));
   } catch (e) { moodleFail(res, e); }
 });
+
+// ── Browser-based Moodle sync ────────────────────────────────────
+// The webservice REST API (moodle.js) is blocked server-side (institution
+// restricts webservice/rest/server.php to campus IPs), so this drives a
+// real headless Chrome to log in and scrape course pages instead (see
+// moodle-browser.js). It has no HTTP request/session to piggyback paths
+// off of, so it builds them straight from the semester store, and merges
+// results into the stored course data itself (admin.js does this
+// client-side for the webservice path; there's no browser open here).
+function getPathsForOwner(owner) {
+  ensureUserDirs(owner);
+  const sems = loadSemesters(owner);
+  return { DATA_FILE: semesterDataFile(owner, sems.active), owner };
+}
+
+function emptyCourseItem() {
+  return { code: '', name: '', credits: '', faculty: '', prerequisite: '', corequisite: '', notes: '',
+    syllabus: '', resources: [], homework: [], exams: [], grades: null };
+}
+
+// Finds or creates the course entry for a scraped Moodle course, fills in
+// catalog fields it's missing, and attaches synced files — same matching
+// and precedence rules as admin.js's mergeMoodleCourses/mergeMoodleFiles,
+// minus the homework-deadline sync (the browser path has no calendar data,
+// only files; see below).
+function mergeBrowserCourse(data, { moodleId, code, name, catalog }, { syllabus, resources, homework }) {
+  data.sections = data.sections || [];
+  let section = data.sections.find(s => s.type === 'courses');
+  if (!section) {
+    section = { title: 'Courses', type: 'courses', collapsed: false, visibility: 'private', items: [] };
+    data.sections.push(section);
+  }
+
+  const norm = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const allCourses = () => data.sections.flatMap(s => s.type === 'courses' ? s.items : []);
+
+  let course = allCourses().find(i => i.moodleId === moodleId);
+  if (!course) {
+    course = section.items.find(i => !i.moodleId && norm(i.code) &&
+      (norm(code).startsWith(norm(i.code)) || (catalog && norm(catalog.code) === norm(i.code))));
+  }
+  let created = false;
+  if (!course) {
+    course = emptyCourseItem();
+    course.code = catalog ? catalog.code : code;
+    course.name = name;
+    section.items.push(course);
+    created = true;
+  }
+  course.moodleId = moodleId;
+  if (!course.name) course.name = name;
+
+  if (catalog) {
+    if (!course.credits) course.credits = catalog.credits;
+    if (!course.faculty) course.faculty = catalog.faculty;
+    course.prerequisite = catalog.prerequisite;
+    course.corequisite = catalog.corequisite;
+    if (!course.notes) {
+      course.notes = [catalog.description,
+        catalog.prerequisite && 'Prerequisite: ' + catalog.prerequisite,
+        catalog.corequisite && 'Corequisite: ' + catalog.corequisite].filter(Boolean).join('\n');
+    }
+  }
+
+  if (syllabus) course.syllabus = syllabus;
+  const extra = [];
+  const filled = new Set();
+  for (const h of homework || []) {
+    const row = (course.homework || []).find(r => r.moodleId === `assign:${h.assignId}`);
+    const ownFile = row && row.file && !row.file.startsWith('docs/materials/');
+    if (row && !ownFile && !filled.has(row)) { row.file = h.file; filled.add(row); }
+    else extra.push({ title: h.title, file: h.file, notes: h.notes, moodleFileId: h.moodleFileId });
+  }
+  const manual = (course.resources || []).filter(r => !r.moodleFileId);
+  course.resources = [...manual, ...(resources || []), ...extra];
+
+  return created;
+}
+
+let browserSyncRunning = false;
+async function browserSyncAllCourses() {
+  if (browserSyncRunning) return { skipped: 'already running' };
+  if (!process.env.MOODLE_USERNAME || !process.env.MOODLE_PASSWORD) return { skipped: 'no credentials' };
+  browserSyncRunning = true;
+  const owner = process.env.MOODLE_SYNC_OWNER || 'salih';
+  const summary = { courses: 0, filesDownloaded: 0, filesConverted: 0, failed: [] };
+  try {
+    const paths = getPathsForOwner(owner);
+    let data;
+    try { data = JSON.parse(fs.readFileSync(paths.DATA_FILE, 'utf8')); } catch { data = { sections: [] }; }
+
+    await moodleBrowser.syncAllCourses(async (course, files, downloadFile) => {
+      try {
+        const catalog = catalogLookup(course.name);
+        const code = catalog ? catalog.code : course.name;
+        const result = await syncMoodleFiles(paths, code, files, downloadFile);
+        mergeBrowserCourse(data, { moodleId: course.id, code, name: course.name, catalog }, result);
+        summary.courses++;
+        summary.filesDownloaded += result.stats.downloaded;
+        summary.filesConverted += result.stats.converted;
+      } catch (e) {
+        console.error(`[moodle-browser] sync failed for course ${course.id} (${course.name}):`, e.message);
+        summary.failed.push(course.name);
+      }
+    });
+
+    fs.writeFileSync(paths.DATA_FILE, JSON.stringify(data, null, 2));
+    console.log('[moodle-browser] sync done:', summary);
+  } catch (e) {
+    console.error('[moodle-browser] sync aborted:', e.message);
+    summary.error = e.message;
+    summary.code = e.code;
+  } finally {
+    browserSyncRunning = false;
+  }
+  return summary;
+}
+
+app.post('/api/moodle/browser-sync', requireUser, async (req, res) => {
+  res.json(await browserSyncAllCourses());
+});
+
+const MOODLE_BROWSER_SYNC_INTERVAL_MS = (Number(process.env.MOODLE_BROWSER_SYNC_HOURS) || 4) * 3600000;
+if (process.env.MOODLE_USERNAME && process.env.MOODLE_PASSWORD) {
+  setTimeout(() => browserSyncAllCourses(), 60000); // give the server a minute to settle after boot
+  setInterval(() => browserSyncAllCourses(), MOODLE_BROWSER_SYNC_INTERVAL_MS);
+}
 
 app.get('/api/conversion/formats', (req, res) => res.json(SUPPORTED_CONVERSIONS));
 

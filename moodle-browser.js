@@ -1,0 +1,262 @@
+// ── Moodle via headless browser ─────────────────────────────────
+// Fallback for when the webservice REST API (moodle.js) is blocked
+// server-side (403 on webservice/rest/server.php, confirmed institution-side
+// IP restriction) while ordinary site browsing from the same host is not.
+//
+// Drives the system's installed Chrome (not Playwright's bundled browser —
+// avoids needing `playwright install` / sudo on a box where apt access is
+// unavailable) with a real login (Microsoft Entra ID SSO), persists the
+// session (cookies) across runs so most syncs don't need to log in again,
+// and scrapes course pages the same way the OzU LMS Downloader browser
+// extension does, since that's known to work against this exact Moodle
+// instance.
+//
+// Credentials: MOODLE_USERNAME / MOODLE_PASSWORD in .env. Only used to log
+// in when the saved session has expired. MFA is not expected on every
+// login (per account settings); if it is hit, the run aborts rather than
+// hanging or retrying blindly.
+
+const fs = require('fs');
+const path = require('path');
+const { chromium } = require('playwright-core');
+
+const MOODLE_URL = (process.env.MOODLE_URL || '').trim().replace(/\/+$/, '');
+const CHROME_PATH = process.env.CHROME_PATH || '/usr/bin/google-chrome';
+const SESSION_STATE_PATH = path.join(__dirname, 'userdata', '.moodle-browser-session.json');
+
+class MoodleBrowserError extends Error {
+  constructor(message, code) { super(message); this.code = code; }
+}
+
+function debugShot(page, name) {
+  try {
+    const dir = path.join(__dirname, 'userdata', '.moodle-browser-debug');
+    fs.mkdirSync(dir, { recursive: true });
+    return page.screenshot({ path: path.join(dir, `${name}-${Date.now()}.png`) }).catch(() => {});
+  } catch { return Promise.resolve(); }
+}
+
+async function login(page) {
+  const username = process.env.MOODLE_USERNAME;
+  const password = process.env.MOODLE_PASSWORD;
+  if (!username || !password) throw new MoodleBrowserError('MOODLE_USERNAME/MOODLE_PASSWORD not set', 'NO_CREDENTIALS');
+
+  await page.goto(`${MOODLE_URL}/login/index.php`, { waitUntil: 'domcontentloaded' });
+
+  // Microsoft Entra ID: email step.
+  await page.waitForSelector('#i0116', { timeout: 20000 });
+  await page.fill('#i0116', username);
+  await page.click('#idSIButton9');
+
+  // Password step.
+  await page.waitForSelector('#i0118', { timeout: 20000 });
+  await page.fill('#i0118', password);
+  await page.click('#idSIButton9');
+
+  // From here: straight back to Moodle, a "Stay signed in?" interstitial
+  // (click Yes for a longer-lived session cookie), or an MFA prompt we
+  // can't handle headlessly.
+  await page.waitForLoadState('domcontentloaded').catch(() => {});
+  for (let i = 0; i < 3; i++) {
+    const onMoodle = page.url().startsWith(MOODLE_URL) && !page.url().includes('login.microsoftonline');
+    if (onMoodle) break;
+
+    const staySignedIn = await page.locator('text=Stay signed in').first().isVisible().catch(() => false);
+    if (staySignedIn) {
+      await page.click('#idSIButton9');
+      await page.waitForLoadState('domcontentloaded').catch(() => {});
+      continue;
+    }
+
+    const errorText = await page.locator('#usernameError, #passwordError, .alert-error').first().textContent().catch(() => null);
+    if (errorText) throw new MoodleBrowserError(`Login rejected: ${errorText.trim()}`, 'LOGIN_FAILED');
+
+    // Anything else at this point (OTP box, Authenticator push, "pick an
+    // account") is an MFA/unexpected screen we can't drive headlessly.
+    await debugShot(page, 'mfa-or-unexpected');
+    throw new MoodleBrowserError('Hit an MFA or unrecognized screen during login', 'MFA_REQUIRED');
+  }
+
+  if (!page.url().startsWith(MOODLE_URL)) {
+    await debugShot(page, 'login-stuck');
+    throw new MoodleBrowserError('Did not land back on Moodle after login', 'LOGIN_FAILED');
+  }
+}
+
+async function ensureSession(context, page) {
+  await page.goto(`${MOODLE_URL}/my/`, { waitUntil: 'domcontentloaded' });
+  const loggedIn = page.url().startsWith(MOODLE_URL) && !page.url().includes('/login/');
+  if (loggedIn) return;
+  await login(page);
+  await context.storageState({ path: SESSION_STATE_PATH });
+}
+
+async function listEnrolledCourses(page) {
+  await page.goto(`${MOODLE_URL}/my/courses.php`, { waitUntil: 'domcontentloaded' });
+  const courses = await page.$$eval('a[href*="/course/view.php?id="]', (links) => {
+    const seen = new Map();
+    for (const a of links) {
+      const m = a.href.match(/[?&]id=(\d+)/);
+      if (!m) continue;
+      const id = m[1];
+      const name = (a.getAttribute('title') || a.textContent || '').trim();
+      if (name && !seen.has(id)) seen.set(id, { id: Number(id), name });
+    }
+    return [...seen.values()];
+  });
+  return courses;
+}
+
+const SELECTORS = {
+  sections: ['ul.weeks li.section', 'ul.topics li.section', 'li[id^="section-"]'],
+  sectionTitle: ['.sectionname', '.course-section-header', '[aria-label]'],
+  resources: '.activity.resource a, .modtype_resource a',
+  folders: '.activity.folder a, .modtype_folder a',
+  assignments: '.activity.assign a, .modtype_assign a',
+};
+
+async function findAllText(page, selectorList) {
+  for (const sel of selectorList) {
+    const count = await page.locator(sel).count();
+    if (count > 0) return sel;
+  }
+  return null;
+}
+
+// Scrapes one course page for resource/folder/assignment-attachment links,
+// shaped like moodle.js's courseFiles() so they can go through the same
+// syncMoodleFiles() pipeline: { section, module, filename, fileurl,
+// filesize, timemodified, mimetype, assignId? }.
+async function discoverCourseFiles(context, page, courseId) {
+  await page.goto(`${MOODLE_URL}/course/view.php?id=${courseId}`, { waitUntil: 'domcontentloaded' });
+
+  const sectionSel = await findAllText(page, SELECTORS.sections);
+  const sections = sectionSel ? await page.locator(sectionSel).all() : [page.locator('body')];
+
+  const files = [];
+  for (const section of sections) {
+    let sectionName = 'General';
+    for (const sel of SELECTORS.sectionTitle) {
+      const t = await section.locator(sel).first().textContent().catch(() => null);
+      if (t && t.trim()) { sectionName = t.trim(); break; }
+    }
+
+    const resourceLinks = await section.locator(SELECTORS.resources).all();
+    for (const link of resourceLinks) {
+      const href = await link.getAttribute('href').catch(() => null);
+      const name = await link.locator('.instancename').first().textContent().catch(() => null)
+        || await link.textContent().catch(() => '');
+      if (!href || !name) continue;
+      files.push({ section: sectionName, module: name.trim(), filename: name.trim(), fileurl: href, filesize: 0, timemodified: 0, mimetype: '' });
+    }
+
+    const folderLinks = await section.locator(SELECTORS.folders).all();
+    for (const link of folderLinks) {
+      const href = await link.getAttribute('href').catch(() => null);
+      if (!href) continue;
+      try {
+        await page.goto(href, { waitUntil: 'domcontentloaded' });
+        const fileLinks = await page.locator('.fp-filename-icon a, .file-picker a').all();
+        for (const fl of fileLinks) {
+          const fHref = await fl.getAttribute('href').catch(() => null);
+          const fName = await fl.locator('.fp-filename').first().textContent().catch(() => null)
+            || await fl.textContent().catch(() => '');
+          if (!fHref || !fName) continue;
+          files.push({ section: sectionName, module: fName.trim(), filename: fName.trim(), fileurl: fHref, filesize: 0, timemodified: 0, mimetype: '' });
+        }
+      } catch (e) {
+        console.warn(`[moodle-browser] folder scrape failed (${href}):`, e.message);
+      } finally {
+        await page.goto(`${MOODLE_URL}/course/view.php?id=${courseId}`, { waitUntil: 'domcontentloaded' });
+      }
+    }
+  }
+
+  // Assignment intro attachments: visit each assignment's own page and pick
+  // up any pluginfile.php links in the activity description (not the
+  // submission area, which the student view doesn't expose anyway).
+  const assignLinks = await page.locator(SELECTORS.assignments).all();
+  const assignHrefs = [];
+  for (const link of assignLinks) {
+    const href = await link.getAttribute('href').catch(() => null);
+    const name = await link.locator('.instancename').first().textContent().catch(() => null) || await link.textContent().catch(() => '');
+    const idMatch = href && href.match(/[?&]id=(\d+)/);
+    if (href && idMatch) assignHrefs.push({ href, id: idMatch[1], name: (name || '').trim() });
+  }
+  for (const a of assignHrefs) {
+    try {
+      await page.goto(a.href, { waitUntil: 'domcontentloaded' });
+      const attachLinks = await page.locator('.activity-description a[href*="pluginfile.php"], .box.py-3.generalbox a[href*="pluginfile.php"]').all();
+      for (const al of attachLinks) {
+        const fHref = await al.getAttribute('href').catch(() => null);
+        const fName = await al.textContent().catch(() => '');
+        if (!fHref || !fName) continue;
+        files.push({
+          section: 'Assignments', module: a.name, filename: fName.trim(), fileurl: fHref,
+          filesize: 0, timemodified: 0, mimetype: '', assignId: a.id,
+        });
+      }
+    } catch (e) {
+      console.warn(`[moodle-browser] assignment scrape failed (${a.href}):`, e.message);
+    }
+  }
+  await page.goto(`${MOODLE_URL}/course/view.php?id=${courseId}`, { waitUntil: 'domcontentloaded' });
+
+  // Fill in size/last-modified via HEAD, so unchanged files are recognized
+  // as such by syncMoodleFiles' cache instead of being re-downloaded every
+  // run. Best-effort: a failed HEAD just leaves a stable 0:0 stamp.
+  await Promise.all(files.map(async (f) => {
+    try {
+      const res = await context.request.head(f.fileurl, { timeout: 10000 });
+      const len = res.headers()['content-length'];
+      const mod = res.headers()['last-modified'];
+      if (len) f.filesize = Number(len) || 0;
+      if (mod) f.timemodified = Math.floor(new Date(mod).getTime() / 1000) || 0;
+    } catch {}
+  }));
+
+  return files;
+}
+
+// Downloads a file using the browser context's authenticated cookies
+// (drop-in replacement for moodle.js's token-based downloadFile, same
+// signature minus `owner`).
+async function downloadViaContext(context, fileurl, destPath) {
+  const res = await context.request.get(fileurl, { timeout: 10 * 60 * 1000 });
+  if (!res.ok()) throw new MoodleBrowserError(`Could not download file (HTTP ${res.status()})`);
+  fs.writeFileSync(destPath, await res.body());
+}
+
+// Runs `onCourse(course, files, downloadFn)` for every enrolled course.
+// Keeps the browser open for the whole run and closes it at the end —
+// short-lived on a RAM-constrained box, not a persistent process.
+async function withSession(fn) {
+  const browser = await chromium.launch({ executablePath: CHROME_PATH, headless: true });
+  try {
+    const contextOptions = {};
+    if (fs.existsSync(SESSION_STATE_PATH)) contextOptions.storageState = SESSION_STATE_PATH;
+    const context = await browser.newContext(contextOptions);
+    const page = await context.newPage();
+    await ensureSession(context, page);
+    await context.storageState({ path: SESSION_STATE_PATH }).catch(() => {});
+    return await fn(context, page);
+  } finally {
+    await browser.close();
+  }
+}
+
+async function syncAllCourses(onCourse) {
+  return withSession(async (context, page) => {
+    const courses = await listEnrolledCourses(page);
+    for (const course of courses) {
+      try {
+        const files = await discoverCourseFiles(context, page, course.id);
+        await onCourse(course, files, (_, url, dest) => downloadViaContext(context, url, dest));
+      } catch (e) {
+        console.error(`[moodle-browser] course ${course.id} (${course.name}) failed:`, e.message);
+      }
+    }
+  });
+}
+
+module.exports = { MoodleBrowserError, syncAllCourses, withSession, listEnrolledCourses, discoverCourseFiles };
