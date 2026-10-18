@@ -985,7 +985,13 @@ app.post('/api/moodle/files', requireUser, async (req, res) => {
 function getPathsForOwner(owner) {
   ensureUserDirs(owner);
   const sems = loadSemesters(owner);
-  return { DATA_FILE: semesterDataFile(owner, sems.active), owner };
+  const userDir = path.join(__dirname, 'userdata', owner);
+  return {
+    DATA_FILE: semesterDataFile(owner, sems.active),
+    DOCS_DIR: path.join(userDir, 'docs'),
+    REGISTRY_FILE: path.join(userDir, 'docs-registry.json'),
+    owner,
+  };
 }
 
 function emptyCourseItem() {
