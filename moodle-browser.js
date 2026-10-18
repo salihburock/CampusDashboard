@@ -36,21 +36,31 @@ class MoodleBrowserError extends Error {
 // factor, automated by the account owner. Returns true once the relay
 // reports the tap went through; the caller still waits for Moodle itself to
 // confirm the login succeeded.
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// The relay's background poller needs a moment to pick up the push
+// notification after it lands on the device, so the first /approve call
+// often finds "no active prompt" yet — retry like the user's own `2fa`
+// shell helper does (up to 5 tries, 1.5s apart).
 async function approveViaRelay(number) {
   if (!MFA_RELAY_URL || !MFA_RELAY_TOKEN) return false;
-  try {
-    const res = await fetch(`${MFA_RELAY_URL}/approve`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-MFA-Token': MFA_RELAY_TOKEN },
-      body: JSON.stringify({ number }),
-      signal: AbortSignal.timeout(15000),
-    });
-    const data = await res.json().catch(() => ({}));
-    return res.ok && data.approved === true;
-  } catch (e) {
-    console.warn('[moodle-browser] mfa-relay call failed:', e.message);
-    return false;
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      const res = await fetch(`${MFA_RELAY_URL}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-MFA-Token': MFA_RELAY_TOKEN },
+        body: JSON.stringify({ number }),
+        signal: AbortSignal.timeout(15000),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.approved === true) return true;
+      console.warn(`[moodle-browser] mfa-relay attempt ${attempt}/5: ${JSON.stringify(data)}`);
+    } catch (e) {
+      console.warn(`[moodle-browser] mfa-relay attempt ${attempt}/5 failed:`, e.message);
+    }
+    if (attempt < 5) await sleep(1500);
   }
+  return false;
 }
 
 function debugShot(page, name) {
