@@ -1080,6 +1080,9 @@ async function browserSyncAllCourses() {
         const code = catalog ? catalog.code : course.name;
         const result = await syncMoodleFiles(paths, code, files, downloadFile);
         mergeBrowserCourse(data, { moodleId: course.id, code, name: course.name, catalog }, result);
+        const s = result.stats;
+        console.log(`[moodle-browser] ${course.name}: done — ${s.downloaded} downloaded, ${s.unchanged} unchanged, ` +
+          `${s.converted} converted to PDF${s.skipped.length ? `, ${s.skipped.length} too large` : ''}${s.failed.length ? `, ${s.failed.length} failed` : ''}`);
         summary.courses++;
         summary.filesDownloaded += result.stats.downloaded;
         summary.filesConverted += result.stats.converted;

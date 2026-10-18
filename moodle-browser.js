@@ -410,9 +410,12 @@ async function withSession(fn) {
 async function syncAllCourses(onCourse) {
   return withSession(async (context, page) => {
     const courses = await listEnrolledCourses(page);
-    for (const course of courses) {
+    console.log(`[moodle-browser] logged in, ${courses.length} courses`);
+    for (const [i, course] of courses.entries()) {
       try {
+        console.log(`[moodle-browser] [${i + 1}/${courses.length}] ${course.name}: scanning`);
         const files = await discoverCourseFiles(context, page, course.id);
+        console.log(`[moodle-browser] [${i + 1}/${courses.length}] ${course.name}: ${files.length} files found, syncing`);
         await onCourse(course, files, (_, url, dest) => downloadViaContext(context, url, dest));
       } catch (e) {
         console.error(`[moodle-browser] course ${course.id} (${course.name}) failed:`, e.message);
