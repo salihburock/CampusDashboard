@@ -163,7 +163,8 @@ async function saveData() {
     });
     if (!res.ok) throw new Error();
     showToast(t('adm.save_ok'));
-  } catch { showToast(t('adm.save_fail'), true); }
+    return true;
+  } catch { showToast(t('adm.save_fail'), true); return false; }
   finally { btn.disabled = false; btn.textContent = t('adm.save'); }
 }
 
@@ -982,13 +983,77 @@ async function confirmMoodleImport() {
 // Synced rows carry a moodleId, so a re-sync updates them in place and
 // leaves anything added by hand alone.
 
+// Two ways to sync: the webservice token (moodle.js), or, where that's
+// blocked, the server's headless-browser sync (moodle-browser.js), which runs
+// on the server and writes the course data itself.
+let browserSyncMode = false;
+
 async function initMoodleSync() {
   try {
+    const bres = await fetch('/api/moodle/browser-sync');
+    const bs = bres.ok ? await bres.json() : {};
+    if (bs.available) {
+      browserSyncMode = true;
+      document.getElementById('moodle-sync-btn').style.display = '';
+      if (bs.running) { showBrowserSyncModal(); pollBrowserSync(); }
+      return;
+    }
     const res = await fetch('/api/moodle/status');
     if (!res.ok) return;
     const st = await res.json();
     if (st.configured) document.getElementById('moodle-sync-btn').style.display = '';
   } catch {}
+}
+
+function showBrowserSyncModal() {
+  document.getElementById('moodle-sync-body').innerHTML =
+    `<p class="moodle-hint">${esc(t('bsync.intro'))}</p><p id="bsync-step" style="margin-top:.75rem"></p>`;
+  document.getElementById('moodle-sync-modal').classList.remove('hidden');
+}
+
+async function runBrowserSync() {
+  showBrowserSyncModal();
+  const step = document.getElementById('bsync-step');
+  // The sync writes the course data on the server and the editor reloads it
+  // afterwards, so save what's here first or it would be lost.
+  step.textContent = t('bsync.saving');
+  if (!(await saveData())) { step.textContent = t('adm.save_fail'); return; }
+  try {
+    const res = await fetch('/api/moodle/browser-sync', { method: 'POST' });
+    if (!res.ok && res.status !== 409) {
+      const err = await res.json().catch(() => ({}));
+      step.textContent = err.error || t('msync.fail');
+      return;
+    }
+  } catch { step.textContent = t('msync.fail'); return; }
+  pollBrowserSync();
+}
+
+async function pollBrowserSync() {
+  const step = document.getElementById('bsync-step');
+  for (;;) {
+    let st;
+    try { st = await (await fetch('/api/moodle/browser-sync')).json(); } catch { st = null; }
+    if (st && !st.running) return finishBrowserSync(st.lastResult || {});
+    if (st && step) {
+      const secs = Math.round((Date.now() - st.startedAt) / 1000);
+      step.textContent = `${st.step || t('bsync.starting')} · ${secs}s`;
+    }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+}
+
+async function finishBrowserSync(r) {
+  const body = document.getElementById('moodle-sync-body');
+  if (r.error) {
+    body.innerHTML = `<p style="color:var(--danger,#e63946)">${esc(t('bsync.failed', { error: r.error }))}</p>`;
+    return;
+  }
+  let msg = t('bsync.done', { courses: r.courses || 0, files: r.filesDownloaded || 0, converted: r.filesConverted || 0 });
+  if (r.failed && r.failed.length) msg += ' · ' + t('bsync.some_failed', { names: r.failed.join(', ') });
+  body.innerHTML = `<p>${esc(msg)}</p>`;
+  await loadData();
+  showToast(msg, Boolean(r.failed && r.failed.length));
 }
 
 function closeMoodleSync() {
@@ -1002,6 +1067,7 @@ function moodleSyncError(data) {
 }
 
 async function openMoodleSync() {
+  if (browserSyncMode) return runBrowserSync();
   const body = document.getElementById('moodle-sync-body');
   body.innerHTML = `<p class="moodle-hint">${esc(t('msync.loading'))}</p>`;
   document.getElementById('moodle-sync-modal').classList.remove('hidden');

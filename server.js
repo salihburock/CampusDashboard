@@ -1085,36 +1085,40 @@ function mergeBrowserCourse(data, { moodleId, code, name, catalog }, { syllabus,
   return created;
 }
 
-let browserSyncRunning = false;
+const BROWSER_SYNC_OWNER = process.env.MOODLE_SYNC_OWNER || 'salih';
+// What the editor polls while a run is going (one run at a time).
+const browserSync = { running: false, step: '', startedAt: null, finishedAt: null, lastResult: null };
+
 async function browserSyncAllCourses() {
-  if (browserSyncRunning) return { skipped: 'already running' };
+  if (browserSync.running) return { skipped: 'already running' };
   if (!process.env.MOODLE_USERNAME || !process.env.MOODLE_PASSWORD) return { skipped: 'no credentials' };
-  browserSyncRunning = true;
-  const owner = process.env.MOODLE_SYNC_OWNER || 'salih';
+  Object.assign(browserSync, { running: true, step: 'Starting', startedAt: Date.now(), finishedAt: null });
   const summary = { courses: 0, filesDownloaded: 0, filesConverted: 0, failed: [] };
   try {
-    const paths = getPathsForOwner(owner);
-    let data;
-    try { data = JSON.parse(fs.readFileSync(paths.DATA_FILE, 'utf8')); } catch { data = { sections: [] }; }
-
+    const paths = getPathsForOwner(BROWSER_SYNC_OWNER);
+    const merges = [];
     await moodleBrowser.syncAllCourses(async (course, files, downloadFile) => {
       try {
         const catalog = catalogLookup(course.name);
         const code = catalog ? catalog.code : course.name;
         const result = await syncMoodleFiles(paths, code, files, downloadFile);
-        mergeBrowserCourse(data, { moodleId: course.id, code, name: course.name, catalog }, result);
+        merges.push([{ moodleId: course.id, code, name: course.name, catalog }, result]);
         const s = result.stats;
         console.log(`[moodle-browser] ${course.name}: done — ${s.downloaded} downloaded, ${s.unchanged} unchanged, ` +
           `${s.converted} converted to PDF${s.skipped.length ? `, ${s.skipped.length} too large` : ''}${s.failed.length ? `, ${s.failed.length} failed` : ''}`);
         summary.courses++;
-        summary.filesDownloaded += result.stats.downloaded;
-        summary.filesConverted += result.stats.converted;
+        summary.filesDownloaded += s.downloaded;
+        summary.filesConverted += s.converted;
       } catch (e) {
         console.error(`[moodle-browser] sync failed for course ${course.id} (${course.name}):`, e.message);
         summary.failed.push(course.name);
       }
-    });
+    }, (step) => { browserSync.step = step; });
 
+    // Read the data only now, so edits saved while the sync ran are kept.
+    let data;
+    try { data = JSON.parse(fs.readFileSync(paths.DATA_FILE, 'utf8')); } catch { data = { sections: [] }; }
+    for (const [course, result] of merges) mergeBrowserCourse(data, course, result);
     fs.writeFileSync(paths.DATA_FILE, JSON.stringify(data, null, 2));
     console.log('[moodle-browser] sync done:', summary);
   } catch (e) {
@@ -1122,13 +1126,26 @@ async function browserSyncAllCourses() {
     summary.error = e.message;
     summary.code = e.code;
   } finally {
-    browserSyncRunning = false;
+    Object.assign(browserSync, { running: false, step: '', finishedAt: Date.now(), lastResult: summary });
   }
   return summary;
 }
 
-app.post('/api/moodle/browser-sync', requireUser, async (req, res) => {
-  res.json(await browserSyncAllCourses());
+function browserSyncAvailable(req) {
+  return Boolean(process.env.MOODLE_USERNAME && process.env.MOODLE_PASSWORD) && req.paths.owner === BROWSER_SYNC_OWNER;
+}
+
+app.get('/api/moodle/browser-sync', requireUser, (req, res) => {
+  res.json({ available: browserSyncAvailable(req), ...browserSync });
+});
+
+// Starts a run and returns right away; the editor polls the GET above. A
+// run takes a minute or two, longer than a proxy will hold a request open.
+app.post('/api/moodle/browser-sync', requireUser, (req, res) => {
+  if (!browserSyncAvailable(req)) return res.status(403).json({ error: 'Moodle sync is not set up for this account' });
+  if (browserSync.running) return res.status(409).json({ error: 'A sync is already running', ...browserSync });
+  browserSyncAllCourses();
+  res.status(202).json({ started: true });
 });
 
 app.get('/api/conversion/formats', (req, res) => res.json(SUPPORTED_CONVERSIONS));

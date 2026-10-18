@@ -406,13 +406,14 @@ async function downloadViaContext(context, fileurl, destPath) {
 // Runs `onCourse(course, files, downloadFn)` for every enrolled course.
 // Keeps the browser open for the whole run and closes it at the end —
 // short-lived on a RAM-constrained box, not a persistent process.
-async function withSession(fn) {
+async function withSession(fn, onProgress = () => {}) {
   const browser = await chromium.launch({ executablePath: CHROME_PATH, headless: true });
   try {
     const contextOptions = {};
     if (fs.existsSync(SESSION_STATE_PATH)) contextOptions.storageState = SESSION_STATE_PATH;
     const context = await browser.newContext(contextOptions);
     const page = await context.newPage();
+    onProgress('Signing in to Moodle');
     await ensureSession(context, page);
     await context.storageState({ path: SESSION_STATE_PATH }).catch(() => {});
     return await fn(context, page);
@@ -421,21 +422,26 @@ async function withSession(fn) {
   }
 }
 
-async function syncAllCourses(onCourse) {
+// onProgress(text) gets a short status line for each step, for the editor.
+async function syncAllCourses(onCourse, onProgress = () => {}) {
   return withSession(async (context, page) => {
+    onProgress('Listing courses');
     const courses = await listEnrolledCourses(page);
     console.log(`[moodle-browser] logged in, ${courses.length} courses`);
     for (const [i, course] of courses.entries()) {
+      const tag = `[${i + 1}/${courses.length}] ${course.name}`;
       try {
-        console.log(`[moodle-browser] [${i + 1}/${courses.length}] ${course.name}: scanning`);
+        console.log(`[moodle-browser] ${tag}: scanning`);
+        onProgress(`${tag}: scanning`);
         const files = await discoverCourseFiles(context, page, course.id);
-        console.log(`[moodle-browser] [${i + 1}/${courses.length}] ${course.name}: ${files.length} files found, syncing`);
+        console.log(`[moodle-browser] ${tag}: ${files.length} files found, syncing`);
+        onProgress(`${tag}: syncing ${files.length} files`);
         await onCourse(course, files, (_, url, dest) => downloadViaContext(context, url, dest));
       } catch (e) {
         console.error(`[moodle-browser] course ${course.id} (${course.name}) failed:`, e.message);
       }
     }
-  });
+  }, onProgress);
 }
 
 module.exports = { MoodleBrowserError, syncAllCourses, withSession, listEnrolledCourses, discoverCourseFiles };
