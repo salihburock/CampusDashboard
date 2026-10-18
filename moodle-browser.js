@@ -384,6 +384,10 @@ async function discoverCourseFiles(context, page, courseId) {
       if (mod) f.timemodified = Math.floor(new Date(mod).getTime() / 1000) || 0;
       const real = realFilename(res);
       if (real) f.filename = real;
+      // Keep the file's own URL: every resource link is mod/resource/
+      // view.php?id=…, and the sync cache keys files by URL minus the query,
+      // so they'd all share one cache entry and re-download every run.
+      if (res.url().includes('/pluginfile.php/')) f.fileurl = res.url();
     } catch {}
   }));
 

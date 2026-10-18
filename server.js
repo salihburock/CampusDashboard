@@ -451,7 +451,7 @@ async function syncMoodleFiles(paths, code, moodleFiles, downloadFile = (owner, 
   const manifest = loadMoodleManifest(paths);
 
   const names = moodleFiles.map(f => f.filename);
-  const listKey = md5(code + '\n' + names.join('\n'));
+  const listKey = md5(code + '\n' + moodleFiles.map(f => `${f.filename} ${f.fileurl.split('?')[0]}`).join('\n'));
   let cls = manifest.courses[listKey];
   if (!cls) {
     const { slug, syllabusIndex } = await classifyCourseFilesWithLlm(code, names);
