@@ -43,21 +43,31 @@ async function login(page) {
 
   await page.goto(`${MOODLE_URL}/login/index.php`, { waitUntil: 'domcontentloaded' });
 
-  // Microsoft Entra ID: email step.
+  // Microsoft Entra ID: email step. fill() doesn't always trigger the
+  // input-validation JS that enables the Next button, so submit with
+  // Enter instead of clicking it.
   await page.waitForSelector('#i0116', { timeout: 20000 });
   await page.fill('#i0116', username);
-  await page.click('#idSIButton9');
+  await page.press('#i0116', 'Enter');
 
-  // Password step.
+  // Some accounts get a "Choose a way to sign in" interstitial before the
+  // password field, defaulting to an Authenticator push; force password.
+  const useMyPassword = page.locator('text=Use my password');
+  if (await useMyPassword.first().isVisible().catch(() => false)) {
+    await useMyPassword.first().click();
+  }
   await page.waitForSelector('#i0118', { timeout: 20000 });
   await page.fill('#i0118', password);
-  await page.click('#idSIButton9');
+  await page.press('#i0118', 'Enter');
 
   // From here: straight back to Moodle, a "Stay signed in?" interstitial
-  // (click Yes for a longer-lived session cookie), or an MFA prompt we
-  // can't handle headlessly.
+  // (click Yes for a longer-lived session cookie), or an Authenticator
+  // approval prompt — not on every login per account policy, so wait it
+  // out (ticking "Don't ask again for 30 days") rather than failing
+  // instantly; a human may be able to approve it, especially on a
+  // manually-triggered run.
   await page.waitForLoadState('domcontentloaded').catch(() => {});
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 4; i++) {
     const onMoodle = page.url().startsWith(MOODLE_URL) && !page.url().includes('login.microsoftonline');
     if (onMoodle) break;
 
@@ -68,11 +78,26 @@ async function login(page) {
       continue;
     }
 
+    const approving = await page.locator('text=Approve sign in request').first().isVisible().catch(() => false);
+    if (approving) {
+      const code = await page.locator('#idRichContext_DisplaySign, [data-testid="displaySign"]').first().textContent().catch(() => null);
+      console.log(`[moodle-browser] Authenticator approval needed${code ? ` — code ${code.trim()}` : ''}`);
+      const dontAskAgain = page.locator('text=Don\'t ask again for 30 days').first();
+      if (await dontAskAgain.isVisible().catch(() => false)) await dontAskAgain.click().catch(() => {});
+      await debugShot(page, 'mfa-pending');
+      try {
+        await page.waitForURL((url) => url.toString().startsWith(MOODLE_URL) && !url.toString().includes('login.microsoftonline'), { timeout: 90000 });
+        break;
+      } catch {
+        throw new MoodleBrowserError('Authenticator approval timed out', 'MFA_REQUIRED');
+      }
+    }
+
     const errorText = await page.locator('#usernameError, #passwordError, .alert-error').first().textContent().catch(() => null);
     if (errorText) throw new MoodleBrowserError(`Login rejected: ${errorText.trim()}`, 'LOGIN_FAILED');
 
-    // Anything else at this point (OTP box, Authenticator push, "pick an
-    // account") is an MFA/unexpected screen we can't drive headlessly.
+    // Anything else at this point ("pick an account", unexpected screen)
+    // we can't drive headlessly.
     await debugShot(page, 'mfa-or-unexpected');
     throw new MoodleBrowserError('Hit an MFA or unrecognized screen during login', 'MFA_REQUIRED');
   }
