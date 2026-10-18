@@ -77,9 +77,15 @@ async function login(page) {
 
   // Some accounts get a "Choose a way to sign in" interstitial before the
   // password field, defaulting to an Authenticator push; force password.
-  const useMyPassword = page.locator('text=Use my password');
-  if (await useMyPassword.first().isVisible().catch(() => false)) {
-    await useMyPassword.first().click();
+  // Client-rendered (SPA), so actively wait rather than snapshot the DOM.
+  const useMyPassword = page.locator('text=Use my password').first();
+  const passwordField = page.locator('#i0118').first();
+  await Promise.race([
+    useMyPassword.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {}),
+    passwordField.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {}),
+  ]);
+  if (await useMyPassword.isVisible().catch(() => false)) {
+    await useMyPassword.click();
   }
   await page.waitForSelector('#i0118', { timeout: 20000 });
   await page.fill('#i0118', password);
