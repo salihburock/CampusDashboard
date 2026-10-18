@@ -529,7 +529,7 @@ async function syncMoodleFiles(paths, code, moodleFiles, downloadFile = (owner, 
       notes: p.f.section || '',
       moodleFileId: p.id,
     };
-    if (p.f.assignId) homework.push({ assignId: p.f.assignId, ...entry });
+    if (p.f.assignId) homework.push({ assignId: p.f.assignId, module: p.f.module, ...entry });
     else resources.push(entry);
   }
   return { syllabus, resources, homework, stats };
@@ -1071,7 +1071,10 @@ function mergeBrowserCourse(data, { moodleId, code, name, catalog }, { syllabus,
   const extra = [];
   const filled = new Set();
   for (const h of homework || []) {
-    const row = (course.homework || []).find(r => r.moodleId === `assign:${h.assignId}`);
+    // The browser sees an assignment's page id, not the instance id the
+    // webservice sync keyed rows by, so fall back to the assignment's name.
+    const row = (course.homework || []).find(r => r.moodleId === `assign:${h.assignId}`)
+      || (course.homework || []).find(r => h.module && r.title && r.title.trim() === h.module.trim());
     const ownFile = row && row.file && !row.file.startsWith('docs/materials/');
     if (row && !ownFile && !filled.has(row)) { row.file = h.file; filled.add(row); }
     else extra.push({ title: h.title, file: h.file, notes: h.notes, moodleFileId: h.moodleFileId });
