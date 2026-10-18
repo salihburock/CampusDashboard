@@ -53,7 +53,10 @@ async function approveViaRelay(number) {
         signal: AbortSignal.timeout(15000),
       });
       const data = await res.json().catch(() => ({}));
-      if (res.ok && data.approved === true) return true;
+      if (res.ok && data.approved === true) {
+        console.log(`[moodle-browser] mfa-relay approved on attempt ${attempt}/5`);
+        return true;
+      }
       console.warn(`[moodle-browser] mfa-relay attempt ${attempt}/5: ${JSON.stringify(data)}`);
     } catch (e) {
       console.warn(`[moodle-browser] mfa-relay attempt ${attempt}/5 failed:`, e.message);
@@ -172,13 +175,16 @@ async function login(page) {
       const dontAskAgain = page.locator('text=/Don.t ask again for \\d+ days/i').first();
       if (await dontAskAgain.isVisible().catch(() => false)) await dontAskAgain.click().catch(() => {});
 
-      if (code && /^\d{1,3}$/.test(code)) await approveViaRelay(Number(code));
+      let relayApproved = false;
+      if (code && /^\d{1,3}$/.test(code)) relayApproved = await approveViaRelay(Number(code));
       await debugShot(page, 'mfa-pending');
       try {
-        await page.waitForURL((url) => url.toString().startsWith(MOODLE_URL) && !url.toString().includes('login.microsoftonline'), { timeout: 30000 });
+        await page.waitForURL((url) => url.toString().startsWith(MOODLE_URL) && !url.toString().includes('login.microsoftonline'), { timeout: 45000 });
         break;
       } catch {
-        throw new MoodleBrowserError('Authenticator approval timed out', 'MFA_REQUIRED');
+        await debugShot(page, 'mfa-approved-but-stuck');
+        throw new MoodleBrowserError(
+          `Authenticator approval timed out (relay reported ${relayApproved ? 'approved' : 'not approved'})`, 'MFA_REQUIRED');
       }
     }
 
