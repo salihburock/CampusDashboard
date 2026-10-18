@@ -122,7 +122,7 @@ async function login(page) {
   // instantly; a human may be able to approve it, especially on a
   // manually-triggered run.
   await page.waitForLoadState('domcontentloaded').catch(() => {});
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 8; i++) {
     const onMoodle = page.url().startsWith(MOODLE_URL) && !page.url().includes('login.microsoftonline');
     if (onMoodle) break;
 
@@ -178,14 +178,16 @@ async function login(page) {
       let relayApproved = false;
       if (code && /^\d{1,3}$/.test(code)) relayApproved = await approveViaRelay(Number(code));
       await debugShot(page, 'mfa-pending');
-      try {
-        await page.waitForURL((url) => url.toString().startsWith(MOODLE_URL) && !url.toString().includes('login.microsoftonline'), { timeout: 45000 });
-        break;
-      } catch {
+      // Don't wait for the final Moodle URL in isolation here — approval
+      // can land on an intermediate screen first (e.g. "Stay signed in?",
+      // still on login.microsoftonline.com), which the top of this loop
+      // already knows how to handle. Let it, instead of timing out while
+      // sitting on a screen that isn't actually stuck.
+      if (!relayApproved && i === 4) {
         await debugShot(page, 'mfa-approved-but-stuck');
-        throw new MoodleBrowserError(
-          `Authenticator approval timed out (relay reported ${relayApproved ? 'approved' : 'not approved'})`, 'MFA_REQUIRED');
+        throw new MoodleBrowserError('Authenticator approval was not confirmed by the relay', 'MFA_REQUIRED');
       }
+      continue;
     }
 
     const errorText = await errorLoc.textContent().catch(() => null);
