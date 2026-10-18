@@ -224,6 +224,9 @@ async function ensureSession(context, page) {
 
 async function listEnrolledCourses(page) {
   await page.goto(`${MOODLE_URL}/my/courses.php`, { waitUntil: 'domcontentloaded' });
+  // The course cards are client-rendered after load; domcontentloaded
+  // fires before they exist.
+  await page.waitForSelector('a[href*="/course/view.php?id="]', { timeout: 20000 }).catch(() => {});
   const courses = await page.$$eval('a[href*="/course/view.php?id="]', (links) => {
     const seen = new Map();
     for (const a of links) {
@@ -260,6 +263,7 @@ async function findAllText(page, selectorList) {
 // filesize, timemodified, mimetype, assignId? }.
 async function discoverCourseFiles(context, page, courseId) {
   await page.goto(`${MOODLE_URL}/course/view.php?id=${courseId}`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector(SELECTORS.sections.join(', '), { timeout: 15000 }).catch(() => {});
 
   const sectionSel = await findAllText(page, SELECTORS.sections);
   const sections = sectionSel ? await page.locator(sectionSel).all() : [page.locator('body')];
