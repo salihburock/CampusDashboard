@@ -84,15 +84,22 @@ async function login(page) {
     useMyPassword.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {}),
     passwordField.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {}),
   ]);
+  // Microsoft's SPA animates screens in (opacity transition); Playwright's
+  // "visible" check passes mid-animation, before the element is really
+  // interactable. Give the transition time to finish.
+  await page.waitForTimeout(1500);
   await debugShot(page, 'step1-chooser');
   if (await useMyPassword.isVisible().catch(() => false)) {
     await useMyPassword.click();
+    await page.waitForTimeout(1500);
     await debugShot(page, 'step1b-after-click');
   }
   await page.waitForSelector('#i0118', { state: 'visible', timeout: 20000 });
+  await page.waitForTimeout(1500);
   await debugShot(page, 'step2-password-field');
   await page.fill('#i0118', password);
   await page.press('#i0118', 'Enter');
+  await page.waitForTimeout(1500);
   await debugShot(page, 'step3-after-submit');
 
   // From here: straight back to Moodle, a "Stay signed in?" interstitial
@@ -102,7 +109,7 @@ async function login(page) {
   // instantly; a human may be able to approve it, especially on a
   // manually-triggered run.
   await page.waitForLoadState('domcontentloaded').catch(() => {});
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 6; i++) {
     const onMoodle = page.url().startsWith(MOODLE_URL) && !page.url().includes('login.microsoftonline');
     if (onMoodle) break;
 
@@ -111,15 +118,27 @@ async function login(page) {
     // outcomes instead of snapshotting the DOM immediately.
     const staySignedInLoc = page.locator('text=Stay signed in').first();
     const approvingLoc = page.locator('text=/Approve sign.?in/i').first();
+    const chooserLoc = page.locator('text=Approve a request on my Microsoft Authenticator app').first();
     const errorLoc = page.locator('#usernameError, #passwordError, .alert-error').first();
     await Promise.race([
       staySignedInLoc.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {}),
       approvingLoc.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {}),
+      chooserLoc.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {}),
       errorLoc.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {}),
       page.waitForURL((url) => url.toString().startsWith(MOODLE_URL) && !url.toString().includes('login.microsoftonline'), { timeout: 10000 }).catch(() => {}),
     ]);
+    await page.waitForTimeout(1500);
+    await debugShot(page, `loop${i}-settled`);
 
     if (page.url().startsWith(MOODLE_URL) && !page.url().includes('login.microsoftonline')) break;
+
+    // This is the mandatory second-factor chooser (Authenticator is the
+    // only option besides it); click through to the real approve screen.
+    if (await chooserLoc.isVisible().catch(() => false)) {
+      await chooserLoc.click();
+      await page.waitForTimeout(1500);
+      continue;
+    }
 
     const staySignedIn = await staySignedInLoc.isVisible().catch(() => false);
     if (staySignedIn) {
