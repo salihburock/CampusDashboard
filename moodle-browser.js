@@ -84,12 +84,16 @@ async function login(page) {
     useMyPassword.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {}),
     passwordField.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {}),
   ]);
+  await debugShot(page, 'step1-chooser');
   if (await useMyPassword.isVisible().catch(() => false)) {
     await useMyPassword.click();
+    await debugShot(page, 'step1b-after-click');
   }
-  await page.waitForSelector('#i0118', { timeout: 20000 });
+  await page.waitForSelector('#i0118', { state: 'visible', timeout: 20000 });
+  await debugShot(page, 'step2-password-field');
   await page.fill('#i0118', password);
   await page.press('#i0118', 'Enter');
+  await debugShot(page, 'step3-after-submit');
 
   // From here: straight back to Moodle, a "Stay signed in?" interstitial
   // (click Yes for a longer-lived session cookie), or an Authenticator
