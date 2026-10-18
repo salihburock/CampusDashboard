@@ -23,9 +23,34 @@ const { chromium } = require('playwright-core');
 const MOODLE_URL = (process.env.MOODLE_URL || '').trim().replace(/\/+$/, '');
 const CHROME_PATH = process.env.CHROME_PATH || '/usr/bin/google-chrome';
 const SESSION_STATE_PATH = path.join(__dirname, 'userdata', '.moodle-browser-session.json');
+const MFA_RELAY_URL = (process.env.MFA_RELAY_URL || '').trim().replace(/\/+$/, '');
+const MFA_RELAY_TOKEN = process.env.MFA_RELAY_TOKEN || '';
 
 class MoodleBrowserError extends Error {
   constructor(message, code) { super(message); this.code = code; }
+}
+
+// Approves a Microsoft Authenticator number-match prompt via the mfa-relay
+// service (self-hosted, ADB-taps a registered Android device/emulator —
+// see ~/gits/mfa-relay on ns). Not a bypass: it's the account's own second
+// factor, automated by the account owner. Returns true once the relay
+// reports the tap went through; the caller still waits for Moodle itself to
+// confirm the login succeeded.
+async function approveViaRelay(number) {
+  if (!MFA_RELAY_URL || !MFA_RELAY_TOKEN) return false;
+  try {
+    const res = await fetch(`${MFA_RELAY_URL}/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-MFA-Token': MFA_RELAY_TOKEN },
+      body: JSON.stringify({ number }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const data = await res.json().catch(() => ({}));
+    return res.ok && data.approved === true;
+  } catch (e) {
+    console.warn('[moodle-browser] mfa-relay call failed:', e.message);
+    return false;
+  }
 }
 
 function debugShot(page, name) {
@@ -78,15 +103,25 @@ async function login(page) {
       continue;
     }
 
-    const approving = await page.locator('text=Approve sign in request').first().isVisible().catch(() => false);
+    const approving = await page.locator('text=/Approve sign.?in/i').first().isVisible().catch(() => false);
     if (approving) {
-      const code = await page.locator('#idRichContext_DisplaySign, [data-testid="displaySign"]').first().textContent().catch(() => null);
-      console.log(`[moodle-browser] Authenticator approval needed${code ? ` — code ${code.trim()}` : ''}`);
-      const dontAskAgain = page.locator('text=Don\'t ask again for 30 days').first();
+      let code = await page.locator('#idRichContext_DisplaySign, [data-testid="displaySign"]').first().textContent().catch(() => null);
+      if (!code) {
+        const bodyText = await page.locator('body').textContent().catch(() => '');
+        const m = bodyText.match(/Enter the number if prompted\.?\s*(\d{2})/) || bodyText.match(/\b(\d{2})\b\s*\n?\s*Didn/);
+        code = m ? m[1] : null;
+      } else {
+        code = code.trim();
+      }
+      console.log(`[moodle-browser] Authenticator approval needed${code ? ` — code ${code}` : ' (no code found)'}`);
+
+      const dontAskAgain = page.locator('text=/Don.t ask again for \\d+ days/i').first();
       if (await dontAskAgain.isVisible().catch(() => false)) await dontAskAgain.click().catch(() => {});
+
+      if (code && /^\d{1,3}$/.test(code)) await approveViaRelay(Number(code));
       await debugShot(page, 'mfa-pending');
       try {
-        await page.waitForURL((url) => url.toString().startsWith(MOODLE_URL) && !url.toString().includes('login.microsoftonline'), { timeout: 90000 });
+        await page.waitForURL((url) => url.toString().startsWith(MOODLE_URL) && !url.toString().includes('login.microsoftonline'), { timeout: 30000 });
         break;
       } catch {
         throw new MoodleBrowserError('Authenticator approval timed out', 'MFA_REQUIRED');
