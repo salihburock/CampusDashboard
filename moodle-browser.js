@@ -94,8 +94,8 @@ async function login(page) {
   const useMyPassword = page.locator('text=Use my password').first();
   const passwordField = page.locator('#i0118').first();
   await Promise.race([
-    useMyPassword.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {}),
-    passwordField.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {}),
+    useMyPassword.waitFor({ state: 'visible', timeout: 30000 }).catch(() => {}),
+    passwordField.waitFor({ state: 'visible', timeout: 30000 }).catch(() => {}),
   ]);
   // Microsoft's SPA animates screens in (opacity transition); Playwright's
   // "visible" check passes mid-animation, before the element is really
@@ -107,7 +107,7 @@ async function login(page) {
     await page.waitForTimeout(1500);
     await debugShot(page, 'step1b-after-click');
   }
-  await page.waitForSelector('#i0118', { state: 'visible', timeout: 20000 });
+  await page.waitForSelector('#i0118', { state: 'visible', timeout: 30000 });
   await page.waitForTimeout(1500);
   await debugShot(page, 'step2-password-field');
   await page.fill('#i0118', password);
@@ -209,7 +209,16 @@ async function ensureSession(context, page) {
   await page.goto(`${MOODLE_URL}/my/`, { waitUntil: 'domcontentloaded' });
   const loggedIn = page.url().startsWith(MOODLE_URL) && !page.url().includes('/login/');
   if (loggedIn) return;
-  await login(page);
+  // Microsoft's login SPA is occasionally just slow to render a step (seen
+  // live, not an MFA/credentials issue) — one retry absorbs that instead of
+  // failing the whole sync over a transient page load.
+  try {
+    await login(page);
+  } catch (e) {
+    if (e instanceof MoodleBrowserError && (e.code === 'MFA_REQUIRED' || e.code === 'LOGIN_FAILED' || e.code === 'NO_CREDENTIALS')) throw e;
+    console.warn('[moodle-browser] login attempt 1 failed, retrying once:', e.message);
+    await login(page);
+  }
   await context.storageState({ path: SESSION_STATE_PATH });
 }
 
