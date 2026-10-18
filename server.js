@@ -460,17 +460,24 @@ async function syncMoodleFiles(paths, code, moodleFiles, downloadFile = (owner, 
       syllabusUrl: syllabusIndex >= 0 ? moodleFiles[syllabusIndex].fileurl : null,
     };
   }
+  // The folder name comes from the course code when there is one, so it
+  // stays the same across syncs; the LLM's slug is only for messy names.
+  const slug = courseSlug(code) || cls.slug;
+  // A small model sometimes calls the only file it sees the syllabus, even
+  // week-2 slides; don't accept a pick that is plainly coursework.
+  const picked = moodleFiles.find(f => f.fileurl === cls.syllabusUrl);
+  const syllabusUrl = picked && !looksLikeCoursework(picked.filename) ? picked.fileurl : null;
 
   // Where each file goes, and whether a copy from an earlier sync can stay.
   const plan = moodleFiles.map(f => {
     const id = md5(f.fileurl.split('?')[0]).slice(0, 12);
     const name = sanitizeSegment(f.filename);
     const ext = path.extname(name).slice(1).toLowerCase();
-    const syllabus = f.fileurl === cls.syllabusUrl;
+    const syllabus = f.fileurl === syllabusUrl;
     const sectionDir = sanitizeSegment(f.section);
     // dir is relative to the docs root; the file name is settled after conversion
-    const dir = syllabus ? '' : `materials/${cls.slug}/${sectionDir}`;
-    const baseName = syllabus ? `syllabus-${cls.slug}` : name.slice(0, name.length - (ext ? ext.length + 1 : 0));
+    const dir = syllabus ? '' : `materials/${slug}/${sectionDir}`;
+    const baseName = syllabus ? `syllabus-${slug}` : name.slice(0, name.length - (ext ? ext.length + 1 : 0));
     const stamp = `${f.timemodified}:${f.filesize}`;
     const prev = manifest.files[id];
     // The name must match too (not just stamp/folder), or a rename (e.g. a
@@ -566,6 +573,19 @@ loadCourseCatalog();
 // letters, terms and missing spaces are ignored ("CS 321.A", "CS321-A_Fall",
 // "cs 321" → "CS 321"). Falls back to a code found in the course name.
 const CATALOG_CODE_RE = /([A-Za-zÇĞİÖŞÜçğıöşü]{2,6})\s*-?\s*(\d{3,4}[A-Za-z]?)/g;
+// "CS 321.A : Programming Paradigms" -> "cs321", "EE 341L.C" -> "ee341l".
+function courseSlug(text) {
+  const m = String(text || '').match(new RegExp(CATALOG_CODE_RE.source));
+  if (!m) return null;
+  return (m[1] + m[2]).toLocaleLowerCase('tr-TR').replace(/ı/g, 'i')
+    .normalize('NFD').replace(/[^a-z0-9]/g, '') || null;
+}
+
+function looksLikeCoursework(name) {
+  return !/syllabus|izlence|outline/i.test(name) &&
+    /week|hafta|lecture|slide|homework|\bhw\d|\blab|quiz|exam|midterm|final|chapter|\bch\d/i.test(name);
+}
+
 function catalogLookup(...texts) {
   const index = catalogLookup.index || (catalogLookup.index = Object.fromEntries(
     Object.values(COURSE_CATALOG).map(c => [c.code.replace(/\s+/g, '').toUpperCase(), c])));

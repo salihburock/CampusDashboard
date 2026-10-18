@@ -367,7 +367,17 @@ async function discoverCourseFiles(context, page, courseId) {
   // run. Best-effort: a failed HEAD just leaves a stable 0:0 stamp.
   await Promise.all(files.map(async (f) => {
     try {
-      const res = await context.request.head(f.fileurl, { timeout: 10000 });
+      let res = await context.request.head(f.fileurl, { timeout: 10000 });
+      // Resources set to display inline (images, mostly) answer with an HTML
+      // page embedding the file instead of redirecting to it; point at the
+      // embedded file itself.
+      if (/text\/html/i.test(res.headers()['content-type'] || '') && f.fileurl.includes('/mod/resource/')) {
+        const html = await (await context.request.get(f.fileurl, { timeout: 15000 })).text();
+        const m = html.match(/https?:\/\/[^"'\s<>]+\/pluginfile\.php\/[^"'\s<>]*\/mod_resource\/content\/[^"'\s<>]+/);
+        if (!m) { f.drop = true; return; }
+        f.fileurl = m[0].replace(/&amp;/g, '&');
+        res = await context.request.head(f.fileurl, { timeout: 10000 });
+      }
       const len = res.headers()['content-length'];
       const mod = res.headers()['last-modified'];
       if (len) f.filesize = Number(len) || 0;
@@ -377,7 +387,7 @@ async function discoverCourseFiles(context, page, courseId) {
     } catch {}
   }));
 
-  return files;
+  return files.filter((f) => !f.drop);
 }
 
 // Downloads a file using the browser context's authenticated cookies
