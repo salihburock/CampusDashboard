@@ -96,14 +96,29 @@ async function login(page) {
     const onMoodle = page.url().startsWith(MOODLE_URL) && !page.url().includes('login.microsoftonline');
     if (onMoodle) break;
 
-    const staySignedIn = await page.locator('text=Stay signed in').first().isVisible().catch(() => false);
+    // The post-password screen is client-rendered (SPA), so an instant
+    // isVisible() check races the render; actively wait for one of the
+    // outcomes instead of snapshotting the DOM immediately.
+    const staySignedInLoc = page.locator('text=Stay signed in').first();
+    const approvingLoc = page.locator('text=/Approve sign.?in/i').first();
+    const errorLoc = page.locator('#usernameError, #passwordError, .alert-error').first();
+    await Promise.race([
+      staySignedInLoc.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {}),
+      approvingLoc.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {}),
+      errorLoc.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {}),
+      page.waitForURL((url) => url.toString().startsWith(MOODLE_URL) && !url.toString().includes('login.microsoftonline'), { timeout: 10000 }).catch(() => {}),
+    ]);
+
+    if (page.url().startsWith(MOODLE_URL) && !page.url().includes('login.microsoftonline')) break;
+
+    const staySignedIn = await staySignedInLoc.isVisible().catch(() => false);
     if (staySignedIn) {
       await page.click('#idSIButton9');
       await page.waitForLoadState('domcontentloaded').catch(() => {});
       continue;
     }
 
-    const approving = await page.locator('text=/Approve sign.?in/i').first().isVisible().catch(() => false);
+    const approving = await approvingLoc.isVisible().catch(() => false);
     if (approving) {
       let code = await page.locator('#idRichContext_DisplaySign, [data-testid="displaySign"]').first().textContent().catch(() => null);
       if (!code) {
@@ -128,7 +143,7 @@ async function login(page) {
       }
     }
 
-    const errorText = await page.locator('#usernameError, #passwordError, .alert-error').first().textContent().catch(() => null);
+    const errorText = await errorLoc.textContent().catch(() => null);
     if (errorText) throw new MoodleBrowserError(`Login rejected: ${errorText.trim()}`, 'LOGIN_FAILED');
 
     // Anything else at this point ("pick an account", unexpected screen)
