@@ -1131,12 +1131,6 @@ app.post('/api/moodle/browser-sync', requireUser, async (req, res) => {
   res.json(await browserSyncAllCourses());
 });
 
-const MOODLE_BROWSER_SYNC_INTERVAL_MS = (Number(process.env.MOODLE_BROWSER_SYNC_HOURS) || 4) * 3600000;
-if (process.env.MOODLE_USERNAME && process.env.MOODLE_PASSWORD) {
-  setTimeout(() => browserSyncAllCourses(), 60000); // give the server a minute to settle after boot
-  setInterval(() => browserSyncAllCourses(), MOODLE_BROWSER_SYNC_INTERVAL_MS);
-}
-
 app.get('/api/conversion/formats', (req, res) => res.json(SUPPORTED_CONVERSIONS));
 
 app.post('/api/conversion/convert', uploadConv.single('file'), async (req, res) => {
