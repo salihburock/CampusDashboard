@@ -260,6 +260,11 @@ function moveFile(src, dest) {
 const OLLAMA_HOST  = process.env.OLLAMA_HOST  || 'http://localhost:11434';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen2.5:3b';
 const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
+// Optional OpenAI-compatible chat API, tried first for picking a course's
+// syllabus from its filenames (only the course code and filenames are sent).
+const LLM_API_URL   = (process.env.LLM_API_URL || '').replace(/\/+$/, '');
+const LLM_API_KEY   = process.env.LLM_API_KEY || '';
+const LLM_API_MODEL = process.env.LLM_API_MODEL || '';
 
 const NAMING_PROMPT =
   'You are naming a university document file. Based on this document text, return ONLY ' +
@@ -372,6 +377,27 @@ function parseClassifyResponse(raw, filenames) {
 async function classifyCourseFilesWithLlm(code, filenames) {
   const prompt = `${FILE_ORG_PROMPT}\n\nCourse code: ${code}\nFiles:\n` +
     filenames.map((f, i) => `${i}: ${f}`).join('\n');
+  if (LLM_API_URL && LLM_API_KEY && LLM_API_MODEL) {
+    try {
+      const res = await fetch(`${LLM_API_URL}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${LLM_API_KEY}` },
+        body: JSON.stringify({
+          model: LLM_API_MODEL,
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 1024, // reasoning models spend part of this before answering
+          temperature: 0.1,
+        }),
+        signal: AbortSignal.timeout(30000),
+      });
+      if (res.ok) {
+        const parsed = parseClassifyResponse((await res.json()).choices?.[0]?.message?.content, filenames);
+        if (parsed) return parsed;
+      } else {
+        console.error(`Syllabus LLM API returned HTTP ${res.status}, falling back`);
+      }
+    } catch (e) { console.error('Syllabus LLM API failed, falling back:', e.message); }
+  }
   try {
     const ping = await fetch(`${OLLAMA_HOST}/api/tags`, { signal: AbortSignal.timeout(2000) });
     if (ping.ok) {
