@@ -173,21 +173,45 @@ function renderCourseCard(course, openPdf) {
   }
 
   // ── Resources ─────────────────────────────────────────────
+  // A dropdown, closed by default: synced courses can have dozens of files.
+  // Grouped by the Moodle section (week) each file's notes name.
   if (course.resources && course.resources.length) {
-    const sub = el("div", "course-sub");
-    sub.appendChild(el("div", "course-sub-label", t('app.resources')));
+    const sub = el("details", "course-sub course-files");
+    const summary = el("summary", "course-sub-label");
+    summary.textContent = `${t('app.resources')} (${course.resources.length})`;
+    sub.appendChild(summary);
+
+    const groups = new Map();
     for (const rc of course.resources) {
-      const row = el("div", "course-row");
-      const info = el("div", "course-row-info");
-      info.appendChild(el("span", "course-row-title", rc.title));
-      if (rc.notes) info.appendChild(el("span", "course-row-sub", rc.notes));
+      const key = rc.notes || "";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(rc);
+    }
+    for (const [section, items] of groups) {
+      if (section && groups.size > 1) {
+        const h = el("div", "course-files-section");
+        h.textContent = section;
+        sub.appendChild(h);
+      }
+      for (const rc of items) {
+        const row = el("div", "course-row");
+        const info = el("div", "course-row-info");
+        const title = el("span", "course-row-title");
+        title.textContent = rc.title;
+        info.appendChild(title);
+        if (rc.notes && groups.size === 1) {
+          const note = el("span", "course-row-sub");
+          note.textContent = rc.notes;
+          info.appendChild(note);
+        }
 
-      const actions = el("div", "course-row-actions");
-      if (rc.file) actions.appendChild(pdfBtn(rc.file, rc.title, openPdf));
+        const actions = el("div", "course-row-actions");
+        if (rc.file) actions.appendChild(pdfBtn(rc.file, rc.title, openPdf));
 
-      row.appendChild(info);
-      row.appendChild(actions);
-      sub.appendChild(row);
+        row.appendChild(info);
+        row.appendChild(actions);
+        sub.appendChild(row);
+      }
     }
     card.appendChild(sub);
   }

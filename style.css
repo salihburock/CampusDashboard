@@ -452,6 +452,33 @@ body {
 }
 
 /* Each row inside a sub-section */
+/* Course files dropdown (a <details>, closed by default) */
+.course-files { display: block; }
+.course-files > .course-row { margin: .15rem 0; }
+.course-files > summary {
+  cursor: pointer;
+  list-style: none;
+  margin-bottom: 0;
+  user-select: none;
+}
+.course-files > summary::-webkit-details-marker { display: none; }
+.course-files > summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 1em;
+  transition: transform .15s;
+}
+.course-files[open] > summary::before { transform: rotate(90deg); }
+.course-files[open] > summary { margin-bottom: .25rem; }
+.course-files-section {
+  font-size: .72rem;
+  font-weight: 600;
+  color: var(--muted);
+  margin-top: .45rem;
+  padding-bottom: .1rem;
+  border-bottom: 1px dashed var(--border);
+}
+
 .course-row {
   display: flex;
   align-items: flex-start;
