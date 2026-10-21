@@ -21,6 +21,7 @@ if (!process.env.SESSION_SECRET) {
 const moodle = require('./moodle'); // reads MOODLE_URL, so after .env is loaded
 const moodleBrowser = require('./moodle-browser');
 const moodleHttp = require('./moodle-http');
+const telegram = require('./telegram-bot');
 const { SUPPORTED_CONVERSIONS, ConversionError, convertFile, convertManyToPdf } = require('./converter');
 
 const app  = express();
@@ -1188,23 +1189,7 @@ function moodleUserId(owner) {
   catch { return null; }
 }
 
-async function sendTelegram(text) {
-  const token = process.env.TELEGRAM_BOT_TOKEN, chat = process.env.TELEGRAM_CHAT_ID;
-  if (!token || !chat) return false;
-  try {
-    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chat, text, disable_web_page_preview: true }),
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!res.ok) console.error('[grades] Telegram send failed:', res.status, (await res.text()).slice(0, 200));
-    return res.ok;
-  } catch (e) {
-    console.error('[grades] Telegram send failed:', e.message);
-    return false;
-  }
-}
+const sendTelegram = telegram.sendMessage;
 
 function describeGrade(g) {
   let s = g.grade;
@@ -1214,8 +1199,15 @@ function describeGrade(g) {
 }
 
 let gradeCheckRunning = false;
+let lastGradeCheck = null; // { at, result } for /status
 async function checkGrades() {
   if (gradeCheckRunning || browserSync.running) return { skipped: 'busy' };
+  const result = await runGradeCheck();
+  lastGradeCheck = { at: Date.now(), result };
+  return result;
+}
+
+async function runGradeCheck() {
   gradeCheckRunning = true;
   const owner = BROWSER_SYNC_OWNER;
   let state;
@@ -1283,7 +1275,7 @@ async function checkGrades() {
   } catch (e) {
     console.error('[grades] check failed:', e.message);
     if (state.lastError !== e.message) {
-      await sendTelegram(`⚠️ Grade watch couldn't check Moodle: ${e.message}. It will try again next hour.`);
+      await sendTelegram(`⚠️ Grade watch couldn't check Moodle: ${e.message}. It will try again at the next check.`);
       state.lastError = e.message;
       try { fs.writeFileSync(gradeWatchPath(owner), JSON.stringify(state, null, 2)); } catch {}
     }
@@ -1298,11 +1290,189 @@ app.post('/api/moodle/grades/check', requireUser, async (req, res) => {
   res.json(await checkGrades());
 });
 
-// Hourly, on the hour; never at startup, so restarts don't add requests.
-if (process.env.MOODLE_GRADE_WATCH === 'on' && process.env.MOODLE_USERNAME && process.env.MOODLE_PASSWORD) {
-  const msToNextHour = 3600000 - (Date.now() % 3600000);
-  setTimeout(() => { checkGrades(); setInterval(checkGrades, 3600000); }, msToNextHour);
+// ── Grade watch schedule + Telegram commands ─────────────────────
+// Runs every intervalMinutes (default 60), aligned to the clock (e.g. on the
+// hour); never at startup, so restarts don't add requests. Pause and interval
+// survive restarts. Telegram commands (TELEGRAM_COMMANDS=on) control it.
+const GRADE_WATCH_ENABLED = process.env.MOODLE_GRADE_WATCH === 'on' && Boolean(process.env.MOODLE_USERNAME && process.env.MOODLE_PASSWORD);
+const MIN_INTERVAL_MIN = 30, MAX_INTERVAL_MIN = 24 * 60;
+const watchSettingsPath = () => path.join(__dirname, 'userdata', BROWSER_SYNC_OWNER, 'grade-watch-settings.json');
+
+function loadWatchSettings() {
+  try { return { paused: false, intervalMinutes: 60, ...JSON.parse(fs.readFileSync(watchSettingsPath(), 'utf8')) }; }
+  catch { return { paused: false, intervalMinutes: 60 }; }
 }
+function saveWatchSettings(settings) { fs.writeFileSync(watchSettingsPath(), JSON.stringify(settings, null, 2)); }
+
+let watchTimer = null, nextGradeCheckAt = null;
+function scheduleGradeWatch() {
+  clearTimeout(watchTimer);
+  watchTimer = null; nextGradeCheckAt = null;
+  const settings = loadWatchSettings();
+  if (!GRADE_WATCH_ENABLED || settings.paused) return;
+  const ms = settings.intervalMinutes * 60000;
+  const now = Date.now();
+  // Align to the local (Istanbul, UTC+3) clock so "60" means on the hour.
+  const offset = 3 * 3600000;
+  nextGradeCheckAt = Math.floor((now + offset) / ms) * ms + ms - offset;
+  watchTimer = setTimeout(async () => {
+    await checkGrades();
+    scheduleGradeWatch();
+  }, nextGradeCheckAt - now);
+}
+scheduleGradeWatch();
+
+const fmtTime = (t) => t ? new Date(t).toLocaleString('en-GB', {
+  timeZone: 'Europe/Istanbul', weekday: 'short', hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short',
+}) : '—';
+const fmtInterval = (min) => min % 60 ? `${min} min` : `${min / 60} h`;
+
+function describeCheck(r) {
+  if (!r) return '—';
+  if (r.error) return `failed: ${r.error}`;
+  if (r.skipped) return `skipped (${r.skipped})`;
+  return `${r.courses} courses, ${r.grades} grades, ${r.changes.length} change${r.changes.length === 1 ? '' : 's'}`;
+}
+
+function describeSync(r) {
+  if (!r) return '—';
+  if (r.skipped) return `skipped (${r.skipped})`;
+  if (r.error) return `failed: ${r.error}`;
+  let s = `${r.courses} courses, ${r.filesDownloaded} files downloaded, ${r.filesConverted} converted`;
+  if (r.failed && r.failed.length) s += `, not synced: ${r.failed.join(', ')}`;
+  return s;
+}
+
+function syncedCourses() {
+  try {
+    const data = JSON.parse(fs.readFileSync(getPathsForOwner(BROWSER_SYNC_OWNER).DATA_FILE, 'utf8'));
+    return (data.sections || []).flatMap(s => s.type === 'courses' ? s.items : []);
+  } catch { return []; }
+}
+
+// "2h", "90m", "90", "1.5h" -> minutes
+function parseInterval(arg) {
+  const m = String(arg || '').trim().toLowerCase().match(/^(\d+(?:[.,]\d+)?)\s*(h|hr|hours?|m|min|mins|minutes?)?$/);
+  if (!m) return null;
+  const n = parseFloat(m[1].replace(',', '.'));
+  return Math.round(m[2] && m[2].startsWith('h') ? n * 60 : n);
+}
+
+const telegramCommands = {
+  help: {
+    help: 'List the commands',
+    run: () => Object.entries(telegramCommands).map(([n, c]) => `/${n} — ${c.help}`).join('\n'),
+  },
+  status: {
+    help: 'Grade watch and sync status',
+    run: () => {
+      const st = loadWatchSettings();
+      const watch = !GRADE_WATCH_ENABLED ? 'off (not enabled on the server)'
+        : st.paused ? `paused (every ${fmtInterval(st.intervalMinutes)} when resumed)`
+        : `on, every ${fmtInterval(st.intervalMinutes)}, next ${fmtTime(nextGradeCheckAt)}`;
+      let state = {};
+      try { state = JSON.parse(fs.readFileSync(gradeWatchPath(BROWSER_SYNC_OWNER), 'utf8')); } catch {}
+      const lines = [
+        `📊 Grade watch: ${watch}${gradeCheckRunning ? ' — checking now' : ''}`,
+        `Last check: ${lastGradeCheck ? `${fmtTime(lastGradeCheck.at)} — ${describeCheck(lastGradeCheck.result)}` : state.checkedAt ? fmtTime(state.checkedAt) : '—'}`,
+      ];
+      if (state.lastError) lines.push(`⚠️ Last error: ${state.lastError}`);
+      lines.push(browserSync.running
+        ? `📁 File sync: running — ${browserSync.step}`
+        : `📁 Last file sync: ${browserSync.finishedAt ? `${fmtTime(browserSync.finishedAt)} — ${describeSync(browserSync.lastResult)}` : '— (since the server started)'}`);
+      return lines.join('\n');
+    },
+  },
+  pause: {
+    help: 'Pause the grade watch',
+    run: () => {
+      const st = loadWatchSettings();
+      if (st.paused) return 'Already paused. /resume to start again.';
+      saveWatchSettings({ ...st, paused: true });
+      scheduleGradeWatch();
+      return '⏸ Grade watch paused. /resume to start again.';
+    },
+  },
+  resume: {
+    help: 'Resume the grade watch',
+    run: () => {
+      if (!GRADE_WATCH_ENABLED) return 'The grade watch is not enabled on the server (MOODLE_GRADE_WATCH).';
+      const st = loadWatchSettings();
+      saveWatchSettings({ ...st, paused: false });
+      scheduleGradeWatch();
+      return `▶️ Grade watch on, every ${fmtInterval(st.intervalMinutes)}. Next check ${fmtTime(nextGradeCheckAt)}.`;
+    },
+  },
+  interval: {
+    help: 'How often to check grades, e.g. /interval 2h or /interval 90m',
+    run: (args) => {
+      const st = loadWatchSettings();
+      if (!args.length) return `Checking every ${fmtInterval(st.intervalMinutes)}. Change it with e.g. /interval 2h or /interval 90m (${MIN_INTERVAL_MIN} min to 24 h).`;
+      const min = parseInterval(args.join(''));
+      if (!min || min < MIN_INTERVAL_MIN || min > MAX_INTERVAL_MIN) {
+        return `Give a time between ${MIN_INTERVAL_MIN} min and 24 h, e.g. /interval 2h or /interval 90m.`;
+      }
+      saveWatchSettings({ ...st, intervalMinutes: min });
+      scheduleGradeWatch();
+      return `⏱ Checking every ${fmtInterval(min)}.` + (st.paused ? ' (Still paused; /resume to start.)' : ` Next check ${fmtTime(nextGradeCheckAt)}.`);
+    },
+  },
+  check: {
+    help: 'Check grades now',
+    run: async () => {
+      if (gradeCheckRunning) return 'A check is already running.';
+      if (browserSync.running) return 'A file sync is running; try again when it is done.';
+      const r = await checkGrades();
+      if (r.error || r.skipped) return `Check ${describeCheck(r)}.`;
+      return r.changes.length ? null : `✅ Checked: ${describeCheck(r)}.`; // changes were already sent
+    },
+  },
+  grades: {
+    help: 'Show current grades',
+    run: () => {
+      let state = {};
+      try { state = JSON.parse(fs.readFileSync(gradeWatchPath(BROWSER_SYNC_OWNER), 'utf8')); } catch {}
+      const lines = [];
+      for (const c of syncedCourses().filter(c => c.moodleId)) {
+        const grades = (state.courses || {})[c.moodleId] || [];
+        if (!grades.length) continue;
+        lines.push(`\n${c.code}`);
+        for (const g of grades) lines.push(`  ${g.item}: ${describeGrade(g)}`);
+      }
+      return lines.length ? `📊 Grades (checked ${fmtTime(state.checkedAt)})${lines.join('\n')}` : 'No grades recorded yet.';
+    },
+  },
+  deadlines: {
+    help: 'Upcoming homework deadlines',
+    run: () => {
+      const today = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Istanbul' }));
+      today.setHours(0, 0, 0, 0);
+      const rows = [];
+      for (const c of syncedCourses()) {
+        for (const h of c.homework || []) {
+          if (!h.deadline) continue;
+          const days = Math.round((new Date(h.deadline + 'T00:00:00') - today) / 86400000);
+          if (days >= 0) rows.push({ days, text: `${c.code} — ${h.title}` , date: h.deadline });
+        }
+      }
+      rows.sort((a, b) => a.days - b.days);
+      if (!rows.length) return 'No upcoming deadlines.';
+      return '🗓 Upcoming deadlines\n' + rows.slice(0, 15).map(r =>
+        `${r.days === 0 ? 'today' : r.days === 1 ? 'tomorrow' : `in ${r.days} days`} (${r.date}): ${r.text}`).join('\n');
+    },
+  },
+  sync: {
+    help: 'Sync course files from Moodle now',
+    run: async () => {
+      if (browserSync.running) return `A sync is already running — ${browserSync.step}`;
+      if (gradeCheckRunning) return 'A grade check is running; try again in a minute.';
+      browserSyncAllCourses().then(r => sendTelegram(`📁 File sync done: ${describeSync(r)}`));
+      return '📁 File sync started. I will send the result when it is done (usually 1–2 minutes).';
+    },
+  },
+};
+
+if (process.env.TELEGRAM_COMMANDS === 'on') telegram.startCommands(telegramCommands);
 
 app.get('/api/conversion/formats', (req, res) => res.json(SUPPORTED_CONVERSIONS));
 
