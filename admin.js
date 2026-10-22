@@ -451,14 +451,18 @@ function sectionHtml(section, i) {
     private:  { label: t('vis.private'),  tip: t('vis.private.tip') },
   };
 
-  const types = ['homework', 'days', 'documents', 'links', 'notes', 'courses'];
+  const types = ['homework', 'days', 'documents', 'links', 'notes', 'courses', 'grading'];
   const typeOptions = types.map(tp =>
     `<option value="${tp}" ${tp === section.type ? 'selected' : ''}>${tp}</option>`
   ).join('');
 
-  const itemsHtml = section.items.length
-    ? section.items.map((item, j) => itemHtml(section.type, item, i, j)).join('')
-    : '<p class="empty-msg small">No items yet.</p>';
+  const isGrading = section.type === 'grading';
+  const itemsHtml = isGrading
+    ? `<p class="empty-msg small">${esc(t('grading.editor_hint', { n: (section.rows || []).length }))}</p>
+       <p class="empty-msg small" id="grading-status-${i}"></p>`
+    : section.items.length
+      ? section.items.map((item, j) => itemHtml(section.type, item, i, j)).join('')
+      : '<p class="empty-msg small">No items yet.</p>';
 
   return `
     <div class="admin-section">
@@ -490,9 +494,36 @@ function sectionHtml(section, i) {
       </div>
       <div class="admin-items">${itemsHtml}</div>
       <div class="section-footer">
-        <button onclick="addItem(${i})" class="btn-secondary btn-sm">+ Add Item</button>
+        ${isGrading
+          ? `<button onclick="refreshGrading(${i})" class="btn-secondary btn-sm">${esc(t('grading.refresh'))}</button>`
+          : `<button onclick="addItem(${i})" class="btn-secondary btn-sm">+ Add Item</button>`}
       </div>
     </div>`;
+}
+
+// The grading overview is built on the server from the course syllabi. Save
+// first so the server reads the current courses; reload afterwards so the
+// editor doesn't overwrite the new rows on its next save.
+async function refreshGrading(i) {
+  const status = () => document.getElementById(`grading-status-${i}`);
+  if (status()) status().textContent = t('grading.saving');
+  if (!(await saveData())) return;
+  try {
+    const res = await fetch('/api/grading/refresh', { method: 'POST' });
+    if (!res.ok && res.status !== 409) throw new Error();
+  } catch { if (status()) status().textContent = t('grading.failed'); return; }
+  const started = Date.now();
+  for (;;) {
+    await new Promise(r => setTimeout(r, 2000));
+    let st;
+    try { st = await (await fetch('/api/grading/refresh')).json(); } catch { continue; }
+    if (status()) status().textContent = t('grading.reading', { s: Math.round((Date.now() - started) / 1000) });
+    if (st.running) continue;
+    const r = st.lastResult || {};
+    await loadData();
+    showToast(r.error ? t('grading.failed') + ': ' + r.error : t('grading.done', { n: r.withGrading || 0, total: r.courses || 0 }), Boolean(r.error));
+    return;
+  }
 }
 
 function itemHtml(type, item, si, ii) {

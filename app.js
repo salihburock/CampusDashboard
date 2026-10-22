@@ -273,6 +273,99 @@ function renderNoteCard(item) {
   return card;
 }
 
+// ── Grading overview ─────────────────────────────────────────
+// section.rows: [{code, name, source, components:[{category, label,
+// percent, bonus}], note}], filled in by the server from course syllabi.
+
+const GRADING_COLUMNS = [
+  ["Midterm", ["Midterm"]], ["Final", ["Final"]], ["Quiz", ["Quiz"]],
+  ["Homework", ["Homework"]], ["Project", ["Project"]], ["Lab", ["Lab"]],
+  ["Attendance", ["Attendance", "Participation"]], ["Presentation", ["Presentation"]],
+  ["Report", ["Report"]], ["Other", ["Other"]],
+];
+
+function renderGradingOverview(section, openPdf) {
+  const rows = section.rows || [];
+  const wrap = el("div", "grading-wrap");
+  if (!rows.length) {
+    const p = el("p", "grading-empty");
+    p.textContent = t("grading.empty");
+    wrap.appendChild(p);
+    return wrap;
+  }
+  const used = GRADING_COLUMNS.filter(([, cats]) =>
+    rows.some(r => r.components.some(c => cats.includes(c.category))));
+
+  const table = el("table", "grading-table");
+  const head = el("tr");
+  for (const label of [t("grading.course"), ...used.map(([k]) => t("grading." + k.toLowerCase())), t("grading.total")]) {
+    const th = el("th");
+    th.textContent = label;
+    head.appendChild(th);
+  }
+  table.appendChild(el("thead")).appendChild(head);
+
+  const body = el("tbody");
+  for (const r of rows) {
+    const tr = el("tr");
+    const course = el("td", "grading-course");
+    const code = el(r.source ? "button" : "span", r.source ? "grading-link" : "");
+    code.textContent = r.code;
+    if (r.source) {
+      code.title = t("grading.open_syllabus");
+      code.addEventListener("click", () => openPdf(r.source, `${r.code} — ${t("app.syllabus")}`));
+    }
+    course.appendChild(code);
+    const name = el("div", "grading-name");
+    name.textContent = r.name.replace(/^.*?:\s*/, "").replace(/\s*\((fall|spring|summer)[^)]*\)\s*$/i, "");
+    course.appendChild(name);
+    tr.appendChild(course);
+
+    if (!r.components.length) {
+      const td = el("td", "grading-note");
+      td.colSpan = used.length + 1;
+      td.textContent = r.note || t("grading.none");
+      tr.appendChild(td);
+      body.appendChild(tr);
+      continue;
+    }
+    let total = 0;
+    for (const [, cats] of used) {
+      const td = el("td", "grading-cell");
+      const parts = r.components.filter(c => cats.includes(c.category));
+      if (parts.length) {
+        const base = parts.filter(c => !c.bonus).reduce((n, c) => n + c.percent, 0);
+        const bonus = parts.filter(c => c.bonus).reduce((n, c) => n + c.percent, 0);
+        total += base;
+        td.textContent = [base ? `${base}%` : "", bonus ? `+${bonus}%` : ""].filter(Boolean).join(" ");
+        td.title = parts.map(c => `${c.label}: ${c.bonus ? "+" : ""}${c.percent}%`).join("\n");
+        td.classList.add("has");
+      } else {
+        td.textContent = "—";
+      }
+      tr.appendChild(td);
+    }
+    const tot = el("td", "grading-total");
+    tot.textContent = `${total}%`;
+    if (Math.round(total) !== 100) {
+      tot.textContent += " ⚠";
+      tot.title = t("grading.not_100");
+    }
+    if (r.note) tot.title = (tot.title ? tot.title + "\n" : "") + r.note;
+    tr.appendChild(tot);
+    body.appendChild(tr);
+  }
+  table.appendChild(body);
+  wrap.appendChild(table);
+
+  if (section.updatedAt) {
+    const foot = el("div", "grading-foot");
+    foot.textContent = t("grading.updated", { when: new Date(section.updatedAt).toLocaleString() });
+    wrap.appendChild(foot);
+  }
+  return wrap;
+}
+
 // ── Section renderer ──────────────────────────────────────────
 
 function renderSection(section, openPdf) {
@@ -280,9 +373,10 @@ function renderSection(section, openPdf) {
 
   const hdr = el("div", "section-header");
   const titleEl = el("div", "section-title");
-  const icons = { courses: "🎓", days: "📅", documents: "📁", links: "🔗", notes: "📝" };
+  const icons = { courses: "🎓", days: "📅", documents: "📁", links: "🔗", notes: "📝", grading: "📊" };
   titleEl.innerHTML = `${icons[section.type] || "▪"} ${section.title}`;
-  titleEl.appendChild(el("span", "section-count", String(section.items.length)));
+  const count = section.type === "grading" ? (section.rows || []).length : section.items.length;
+  titleEl.appendChild(el("span", "section-count", String(count)));
   if (section.type === "courses") {
     const totalCredits = section.items.reduce((sum, c) => {
       const n = parseFloat(c.credits);
@@ -297,6 +391,12 @@ function renderSection(section, openPdf) {
   hdr.addEventListener("click", () => panel.classList.toggle("collapsed"));
 
   const body = el("div", "section-body");
+  if (section.type === "grading") {
+    body.appendChild(renderGradingOverview(section, openPdf));
+    panel.appendChild(hdr);
+    panel.appendChild(body);
+    return panel;
+  }
   const isCourses = section.type === "courses";
   const grid = el("div", isCourses ? "course-grid" : "card-grid");
 

@@ -22,6 +22,7 @@ const moodle = require('./moodle'); // reads MOODLE_URL, so after .env is loaded
 const moodleBrowser = require('./moodle-browser');
 const moodleHttp = require('./moodle-http');
 const telegram = require('./telegram-bot');
+const grading = require('./grading');
 const { SUPPORTED_CONVERSIONS, ConversionError, convertFile, convertManyToPdf } = require('./converter');
 
 const app  = express();
@@ -1149,6 +1150,8 @@ async function browserSyncAllCourses() {
     for (const [course, result] of merges) mergeBrowserCourse(data, course, result);
     fs.writeFileSync(paths.DATA_FILE, JSON.stringify(data, null, 2));
     console.log('[moodle-browser] sync done:', summary);
+    // New syllabi may have arrived; update the grading overview in the background.
+    refreshGradingOverview(paths).catch(e => console.error('[grading] refresh failed:', e.message));
   } catch (e) {
     console.error('[moodle-browser] sync aborted:', e.message);
     summary.error = e.message;
@@ -1284,6 +1287,63 @@ async function runGradeCheck() {
     gradeCheckRunning = false;
   }
 }
+
+// ── Grading overview section ──────────────────────────────────────
+// A dashboard section (type "grading") holding, per course, the grading
+// breakdown read from its syllabus (see grading.js). The rows live in the
+// section itself, so it shows with that section's own visibility.
+const gradingRuns = new Map(); // owner -> { running, startedAt, finishedAt, lastResult }
+
+async function refreshGradingOverview(paths) {
+  const run = gradingRuns.get(paths.owner) || {};
+  if (run.running) return { skipped: 'already running' };
+  gradingRuns.set(paths.owner, { ...run, running: true, startedAt: Date.now() });
+  let result;
+  try {
+    const data = JSON.parse(fs.readFileSync(paths.DATA_FILE, 'utf8'));
+    const courses = (data.sections || []).flatMap(s => s.type === 'courses' ? s.items : []).filter(c => c.code || c.name);
+    const cachePath = path.join(path.dirname(paths.DOCS_DIR), 'grading-cache.json');
+    let cache = {};
+    try { cache = JSON.parse(fs.readFileSync(cachePath, 'utf8')); } catch {}
+    const rows = await grading.buildOverview(courses, paths.DOCS_DIR, cache, msg => console.log(`[grading] ${msg}`));
+    fs.writeFileSync(cachePath, JSON.stringify(cache, null, 2));
+
+    // Re-read so edits saved meanwhile are kept; add the section if missing.
+    const fresh = JSON.parse(fs.readFileSync(paths.DATA_FILE, 'utf8'));
+    fresh.sections = fresh.sections || [];
+    let section = fresh.sections.find(s => s.type === 'grading');
+    if (!section) {
+      const coursesIdx = fresh.sections.findIndex(s => s.type === 'courses');
+      const vis = coursesIdx >= 0 ? (fresh.sections[coursesIdx].visibility || 'private') : 'private';
+      section = { title: 'Grading overview', type: 'grading', collapsed: false, visibility: vis, items: [] };
+      fresh.sections.splice(coursesIdx >= 0 ? coursesIdx + 1 : fresh.sections.length, 0, section);
+    }
+    section.rows = rows;
+    section.updatedAt = Date.now();
+    fs.writeFileSync(paths.DATA_FILE, JSON.stringify(fresh, null, 2));
+    result = { courses: rows.length, withGrading: rows.filter(r => r.components.length).length };
+    console.log('[grading] overview updated:', result);
+  } catch (e) {
+    result = { error: e.message };
+    throw e;
+  } finally {
+    gradingRuns.set(paths.owner, { running: false, finishedAt: Date.now(), lastResult: result });
+  }
+  return result;
+}
+
+app.get('/api/grading/refresh', requireUser, (req, res) => {
+  res.json(gradingRuns.get(req.paths.owner) || { running: false });
+});
+
+// Starts a refresh and returns right away (the first run reads every
+// syllabus through the LLM); the editor polls the GET above.
+app.post('/api/grading/refresh', requireUser, (req, res) => {
+  const run = gradingRuns.get(req.paths.owner);
+  if (run && run.running) return res.status(409).json({ error: 'Already refreshing', ...run });
+  refreshGradingOverview(req.paths).catch(e => console.error('[grading] refresh failed:', e.message));
+  res.status(202).json({ started: true });
+});
 
 app.post('/api/moodle/grades/check', requireUser, async (req, res) => {
   if (!browserSyncAvailable(req)) return res.status(403).json({ error: 'Moodle sync is not set up for this account' });

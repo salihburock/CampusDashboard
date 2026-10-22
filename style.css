@@ -590,3 +590,48 @@ body {
   html { font-size: 18px; }
   .container { max-width: 1560px; }
 }
+
+/* ── Grading overview section ─────────────────────────────── */
+.grading-wrap { overflow-x: auto; }
+.grading-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .85rem;
+}
+.grading-table th {
+  text-align: center;
+  font-size: .7rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  padding: .5rem .4rem;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.grading-table th:first-child { text-align: left; }
+.grading-table td {
+  padding: .5rem .4rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.grading-table tr:last-child td { border-bottom: none; }
+.grading-course { min-width: 11rem; }
+.grading-link {
+  font: inherit;
+  font-weight: 700;
+  color: var(--accent);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+.grading-link:hover { text-decoration: underline; }
+.grading-course > span { font-weight: 700; }
+.grading-name { font-size: .75rem; color: var(--muted); }
+.grading-cell { text-align: center; color: var(--muted); white-space: nowrap; }
+.grading-cell.has { color: inherit; font-weight: 600; cursor: help; }
+.grading-total { text-align: center; font-weight: 700; white-space: nowrap; }
+.grading-note { color: var(--muted); font-style: italic; font-size: .8rem; }
+.grading-foot { font-size: .7rem; color: var(--muted); margin-top: .5rem; }
+.grading-empty { color: var(--muted); }
