@@ -476,7 +476,9 @@ const md5 = s => crypto.createHash('md5').update(s).digest('hex');
 //              added: ["docs/..." of the files downloaded this time] } }
 // for the frontend to merge into the course item. homework holds the files
 // of assignments, so they can go onto the matching homework row.
-async function syncMoodleFiles(paths, code, moodleFiles, downloadFile = (owner, url, dest) => moodle.downloadFile(owner, url, dest)) {
+// slugText: the course's own name on Moodle, for the folder name. `code` may be
+// a catalog code, which drops a lab's suffix ("EE 341L" -> "EE 341").
+async function syncMoodleFiles(paths, code, moodleFiles, downloadFile = (owner, url, dest) => moodle.downloadFile(owner, url, dest), slugText = code) {
   const stats = { downloaded: 0, unchanged: 0, converted: 0, skipped: [], failed: [], added: [] };
   if (!moodleFiles.length) return { syllabus: null, resources: [], homework: [], stats };
   const manifest = loadMoodleManifest(paths);
@@ -493,7 +495,7 @@ async function syncMoodleFiles(paths, code, moodleFiles, downloadFile = (owner, 
   }
   // The folder name comes from the course code when there is one, so it
   // stays the same across syncs; the LLM's slug is only for messy names.
-  const slug = courseSlug(code) || cls.slug;
+  const slug = courseSlug(slugText) || courseSlug(code) || cls.slug;
   // A small model sometimes calls the only file it sees the syllabus, even
   // week-2 slides; don't accept a pick that is plainly coursework.
   const picked = moodleFiles.find(f => f.fileurl === cls.syllabusUrl);
@@ -1224,7 +1226,7 @@ async function syncCourseFromZip(paths, course, onStep) {
     onStep(`syncing ${files.length} files`);
     const catalog = catalogLookup(course.shortname, course.fullname);
     const code = catalog ? catalog.code : course.fullname;
-    const result = await syncMoodleFiles(paths, code, files, fromZip);
+    const result = await syncMoodleFiles(paths, code, files, fromZip, course.shortname || course.fullname);
     return {
       merge: [{ moodleId: course.id, code, name: course.fullname, catalog }, result,
         { deadlines: homeworkFromManifest(m), grades: m.grades }],
