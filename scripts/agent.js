@@ -17,6 +17,10 @@
 //                               Without codes: current Moodle courses plus
 //                               ones already synced. --files downloads new
 //                               or changed course files (slow).
+//   zip <code> [out.zip]        Everything in one Moodle course as a zip
+//                               (files, assignments, pages, grades and a
+//                               manifest.json), like the LMS Downloader
+//                               extension's button. Prints the zip's path.
 //
 // --sem <id> targets another semester than the active one.
 
@@ -219,6 +223,18 @@ const commands = {
     await api('PUT', '/api/data', data);
     return { ...counts, files: fileStats };
   },
+
+  async zip(code, out) {
+    if (!code) die('usage: zip <code> [out.zip]');
+    const res = await fetch(`${BASE}/api/moodle/zip?course=${encodeURIComponent(code)}`, {
+      headers: { Authorization: `Bearer ${ENV.AGENT_TOKEN}` },
+    });
+    if (!res.ok) die(`zip ${code}: HTTP ${res.status} ${(await res.json().catch(() => ({}))).error || ''}`);
+    const name = (/filename="?([^";]+)"?/.exec(res.headers.get('content-disposition') || '') || [])[1] || 'course.zip';
+    const dest = path.resolve(out || name);
+    fs.writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
+    return dest;
+  },
 };
 
 (async () => {
@@ -227,7 +243,7 @@ const commands = {
   if (si >= 0) { SEM = argv[si + 1] || ''; argv.splice(si, 2); }
   const [cmd, ...rest] = argv;
   if (!commands[cmd]) {
-    console.log(fs.readFileSync(__filename, 'utf8').split('\n').slice(1, 21).map(l => l.replace(/^\/\/ ?/, '')).join('\n'));
+    console.log(fs.readFileSync(__filename, 'utf8').split('\n').slice(1, 25).map(l => l.replace(/^\/\/ ?/, '')).join('\n'));
     process.exit(cmd ? 1 : 0);
   }
   const out = await commands[cmd](...rest);

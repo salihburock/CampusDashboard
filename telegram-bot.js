@@ -6,6 +6,9 @@
 // Telegram hands a bot's incoming messages to a single listener, so command
 // listening needs a bot no other program reads updates from.
 
+const fs = require('fs');
+const path = require('path');
+
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const CHAT = String(process.env.TELEGRAM_CHAT_ID || '');
 
@@ -37,6 +40,23 @@ async function sendMessage(text) {
     console.error('[telegram] send failed:', e.message);
     return false;
   }
+}
+
+// Bots may upload files up to 50 MB.
+const MAX_DOCUMENT_BYTES = 50 * 1024 * 1024;
+
+async function sendDocument(filePath, caption = '') {
+  if (!TOKEN || !CHAT) return false;
+  const form = new FormData();
+  form.set('chat_id', CHAT);
+  if (caption) form.set('caption', caption.slice(0, 1024));
+  form.set('document', await fs.openAsBlob(filePath), path.basename(filePath));
+  const res = await fetch(`https://api.telegram.org/bot${TOKEN}/sendDocument`, {
+    method: 'POST', body: form, signal: AbortSignal.timeout(10 * 60000),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!data.ok) throw new TelegramError(data.description || `HTTP ${res.status}`, data.error_code || res.status);
+  return true;
 }
 
 // commands: { name: { help, run(args) -> reply text } }. Runs until the
@@ -86,4 +106,4 @@ function startCommands(commands) {
   return true;
 }
 
-module.exports = { sendMessage, startCommands };
+module.exports = { sendMessage, sendDocument, MAX_DOCUMENT_BYTES, startCommands };

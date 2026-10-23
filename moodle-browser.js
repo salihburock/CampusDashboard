@@ -1,15 +1,15 @@
-// ── Moodle via headless browser ─────────────────────────────────
-// Fallback for when the webservice REST API (moodle.js) is blocked
-// server-side (403 on webservice/rest/server.php, confirmed institution-side
-// IP restriction) while ordinary site browsing from the same host is not.
+// ── Moodle login via headless browser ───────────────────────────
+// The webservice REST API (moodle.js) is blocked for servers by the
+// university (403 on webservice/rest/server.php), while ordinary site
+// browsing with a logged-in session is not. This signs in like a person
+// would and saves the session cookies; everything else (course zips,
+// grades) is fetched with them over plain HTTP (moodle-http.js,
+// moodle-zip.js).
 //
 // Drives the system's installed Chrome (not Playwright's bundled browser —
 // avoids needing `playwright install` / sudo on a box where apt access is
-// unavailable) with a real login (Microsoft Entra ID SSO), persists the
-// session (cookies) across runs so most syncs don't need to log in again,
-// and scrapes course pages the same way the OzU LMS Downloader browser
-// extension does, since that's known to work against this exact Moodle
-// instance.
+// unavailable) with a real login (Microsoft Entra ID SSO), and persists the
+// session (cookies) across runs so most syncs don't need to log in again.
 //
 // Credentials: MOODLE_USERNAME / MOODLE_PASSWORD in .env. Only used to log
 // in when the saved session has expired. MFA is not expected on every
@@ -222,232 +222,22 @@ async function ensureSession(context, page) {
   await context.storageState({ path: SESSION_STATE_PATH });
 }
 
-async function listEnrolledCourses(page) {
-  await page.goto(`${MOODLE_URL}/my/courses.php`, { waitUntil: 'domcontentloaded' });
-  // The course cards are client-rendered after load; domcontentloaded
-  // fires before they exist.
-  await page.waitForSelector('a[href*="/course/view.php?id="]', { timeout: 20000 }).catch(() => {});
-  const courses = await page.$$eval('a[href*="/course/view.php?id="]', (links) => {
-    const seen = new Map();
-    for (const a of links) {
-      const m = a.href.match(/[?&]id=(\d+)/);
-      if (!m) continue;
-      const id = m[1];
-      const name = (a.getAttribute('title') || a.textContent || '').trim();
-      if (name && !seen.has(id)) seen.set(id, { id: Number(id), name });
-    }
-    return [...seen.values()];
-  });
-  return courses;
-}
-
-const SELECTORS = {
-  sections: ['ul.weeks li.section', 'ul.topics li.section', 'li[id^="section-"]'],
-  sectionTitle: ['.sectionname', '.course-section-header', '[aria-label]'],
-  resources: '.activity.resource a, .modtype_resource a',
-  folders: '.activity.folder a, .modtype_folder a',
-  assignments: '.activity.assign a, .modtype_assign a',
-};
-
-// Moodle appends a hidden accessibility hint to .instancename/.fp-filename
-// ("File", "Folder", …) as a sibling text/span node; textContent() on the
-// whole element picks that up too, corrupting the real filename (matches
-// the OzU extension's own childNodes[0] workaround for the same markup).
-async function firstTextNode(locator) {
-  const text = await locator.evaluate((el) => (el.childNodes[0] && el.childNodes[0].textContent) || el.textContent, undefined, { timeout: 1000 }).catch(() => null);
-  return text ? text.trim() : null;
-}
-
-// A resource link's title isn't its filename ("L2 - Metrics" for
-// L2-key-metrics.pdf). mod/resource/view.php redirects to the pluginfile
-// URL, whose last path segment (or Content-Disposition) is the real name,
-// extension included.
-function realFilename(res) {
-  const cd = res.headers()['content-disposition'] || '';
-  const m = cd.match(/filename\*=UTF-8''([^;]+)/i) || cd.match(/filename="?([^";]+)"?/i);
-  let name = m ? m[1] : '';
-  if (!name) {
-    try {
-      const u = new URL(res.url());
-      if (u.pathname.includes('/pluginfile.php/')) name = u.pathname.split('/').pop();
-    } catch {}
-  }
-  try { name = decodeURIComponent(name); } catch {}
-  return /\.[A-Za-z0-9]{1,8}$/.test(name) ? name : null;
-}
-
-async function findAllText(page, selectorList) {
-  for (const sel of selectorList) {
-    const count = await page.locator(sel).count();
-    if (count > 0) return sel;
-  }
-  return null;
-}
-
-// Scrapes one course page for resource/folder/assignment-attachment links,
-// shaped like moodle.js's courseFiles() so they can go through the same
-// syncMoodleFiles() pipeline: { section, module, filename, fileurl,
-// filesize, timemodified, mimetype, assignId? }.
-async function discoverCourseFiles(context, page, courseId) {
-  await page.goto(`${MOODLE_URL}/course/view.php?id=${courseId}`, { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector(SELECTORS.sections.join(', '), { timeout: 15000 }).catch(() => {});
-
-  const sectionSel = await findAllText(page, SELECTORS.sections);
-  const sections = sectionSel ? await page.locator(sectionSel).all() : [page.locator('body')];
-
-  const files = [];
-  for (const section of sections) {
-    let sectionName = 'General';
-    for (const sel of SELECTORS.sectionTitle) {
-      const t = await section.locator(sel).first().textContent({ timeout: 1000 }).catch(() => null);
-      if (t && t.trim()) { sectionName = t.trim(); break; }
-    }
-
-    const resourceLinks = await section.locator(SELECTORS.resources).all();
-    for (const link of resourceLinks) {
-      const href = await link.getAttribute('href').catch(() => null);
-      const name = await firstTextNode(link.locator('.instancename').first()) || await firstTextNode(link);
-      if (!href || !name) continue;
-      files.push({ section: sectionName, module: name, filename: name, fileurl: href, filesize: 0, timemodified: 0, mimetype: '' });
-    }
-
-    const folderLinks = await section.locator(SELECTORS.folders).all();
-    for (const link of folderLinks) {
-      const href = await link.getAttribute('href').catch(() => null);
-      if (!href) continue;
-      try {
-        await page.goto(href, { waitUntil: 'domcontentloaded' });
-        const fileLinks = await page.locator('.fp-filename-icon a, .file-picker a').all();
-        for (const fl of fileLinks) {
-          const fHref = await fl.getAttribute('href').catch(() => null);
-          const fName = await firstTextNode(fl.locator('.fp-filename').first()) || await firstTextNode(fl);
-          if (!fHref || !fName) continue;
-          files.push({ section: sectionName, module: fName, filename: fName, fileurl: fHref, filesize: 0, timemodified: 0, mimetype: '' });
-        }
-      } catch (e) {
-        console.warn(`[moodle-browser] folder scrape failed (${href}):`, e.message);
-      } finally {
-        await page.goto(`${MOODLE_URL}/course/view.php?id=${courseId}`, { waitUntil: 'domcontentloaded' });
-      }
-    }
-  }
-
-  // Assignment intro attachments: visit each assignment's own page and pick
-  // up any pluginfile.php links in the activity description (not the
-  // submission area, which the student view doesn't expose anyway).
-  const assignLinks = await page.locator(SELECTORS.assignments).all();
-  const assignHrefs = [];
-  for (const link of assignLinks) {
-    const href = await link.getAttribute('href').catch(() => null);
-    const name = await firstTextNode(link.locator('.instancename').first()) || await firstTextNode(link);
-    const idMatch = href && href.match(/[?&]id=(\d+)/);
-    if (href && idMatch) assignHrefs.push({ href, id: idMatch[1], name: name || '' });
-  }
-  for (const a of assignHrefs) {
-    try {
-      await page.goto(a.href, { waitUntil: 'domcontentloaded' });
-      const attachLinks = await page.locator('.activity-description a[href*="pluginfile.php"], .box.py-3.generalbox a[href*="pluginfile.php"]').all();
-      for (const al of attachLinks) {
-        const fHref = await al.getAttribute('href').catch(() => null);
-        const fName = await al.textContent().catch(() => '');
-        if (!fHref || !fName) continue;
-        files.push({
-          section: 'Assignments', module: a.name, filename: fName.trim(), fileurl: fHref,
-          filesize: 0, timemodified: 0, mimetype: '', assignId: a.id,
-        });
-      }
-    } catch (e) {
-      console.warn(`[moodle-browser] assignment scrape failed (${a.href}):`, e.message);
-    }
-  }
-  await page.goto(`${MOODLE_URL}/course/view.php?id=${courseId}`, { waitUntil: 'domcontentloaded' });
-
-  // Fill in size/last-modified via HEAD, so unchanged files are recognized
-  // as such by syncMoodleFiles' cache instead of being re-downloaded every
-  // run. Best-effort: a failed HEAD just leaves a stable 0:0 stamp.
-  await Promise.all(files.map(async (f) => {
-    try {
-      let res = await context.request.head(f.fileurl, { timeout: 10000 });
-      // Resources set to display inline (images, mostly) answer with an HTML
-      // page embedding the file instead of redirecting to it; point at the
-      // embedded file itself.
-      if (/text\/html/i.test(res.headers()['content-type'] || '') && f.fileurl.includes('/mod/resource/')) {
-        const html = await (await context.request.get(f.fileurl, { timeout: 15000 })).text();
-        const m = html.match(/https?:\/\/[^"'\s<>]+\/pluginfile\.php\/[^"'\s<>]*\/mod_resource\/content\/[^"'\s<>]+/);
-        if (!m) { f.drop = true; return; }
-        f.fileurl = m[0].replace(/&amp;/g, '&');
-        res = await context.request.head(f.fileurl, { timeout: 10000 });
-      }
-      const len = res.headers()['content-length'];
-      const mod = res.headers()['last-modified'];
-      if (len) f.filesize = Number(len) || 0;
-      if (mod) f.timemodified = Math.floor(new Date(mod).getTime() / 1000) || 0;
-      const real = realFilename(res);
-      if (real) f.filename = real;
-      // Keep the file's own URL: every resource link is mod/resource/
-      // view.php?id=…, and the sync cache keys files by URL minus the query,
-      // so they'd all share one cache entry and re-download every run.
-      if (res.url().includes('/pluginfile.php/')) f.fileurl = res.url();
-    } catch {}
-  }));
-
-  return files.filter((f) => !f.drop);
-}
-
-// Downloads a file using the browser context's authenticated cookies
-// (drop-in replacement for moodle.js's token-based downloadFile, same
-// signature minus `owner`).
-async function downloadViaContext(context, fileurl, destPath) {
-  const res = await context.request.get(fileurl, { timeout: 10 * 60 * 1000 });
-  if (!res.ok()) throw new MoodleBrowserError(`Could not download file (HTTP ${res.status()})`);
-  fs.writeFileSync(destPath, await res.body());
-}
-
-// Runs `onCourse(course, files, downloadFn)` for every enrolled course.
-// Keeps the browser open for the whole run and closes it at the end —
-// short-lived on a RAM-constrained box, not a persistent process.
-async function withSession(fn, onProgress = () => {}) {
+// Signs in again (only if the saved session has expired) so plain HTTP
+// requests (moodle-http.js, moodle-zip.js) have a fresh session cookie. The
+// browser is open only for the login, then closed: short-lived on a
+// RAM-constrained box, not a persistent process.
+async function refreshSession() {
   const browser = await chromium.launch({ executablePath: CHROME_PATH, headless: true });
   try {
     const contextOptions = {};
     if (fs.existsSync(SESSION_STATE_PATH)) contextOptions.storageState = SESSION_STATE_PATH;
     const context = await browser.newContext(contextOptions);
     const page = await context.newPage();
-    onProgress('Signing in to Moodle');
     await ensureSession(context, page);
     await context.storageState({ path: SESSION_STATE_PATH }).catch(() => {});
-    return await fn(context, page);
   } finally {
     await browser.close();
   }
 }
 
-// onProgress(text) gets a short status line for each step, for the editor.
-async function syncAllCourses(onCourse, onProgress = () => {}) {
-  return withSession(async (context, page) => {
-    onProgress('Listing courses');
-    const courses = await listEnrolledCourses(page);
-    console.log(`[moodle-browser] logged in, ${courses.length} courses`);
-    for (const [i, course] of courses.entries()) {
-      const tag = `[${i + 1}/${courses.length}] ${course.name}`;
-      try {
-        console.log(`[moodle-browser] ${tag}: scanning`);
-        onProgress(`${tag}: scanning`);
-        const files = await discoverCourseFiles(context, page, course.id);
-        console.log(`[moodle-browser] ${tag}: ${files.length} files found, syncing`);
-        onProgress(`${tag}: syncing ${files.length} files`);
-        await onCourse(course, files, (_, url, dest) => downloadViaContext(context, url, dest));
-      } catch (e) {
-        console.error(`[moodle-browser] course ${course.id} (${course.name}) failed:`, e.message);
-      }
-    }
-  }, onProgress);
-}
-
-// Signs in again (only if the saved session has expired) so plain HTTP
-// requests (moodle-http.js) have a fresh session cookie.
-async function refreshSession() {
-  return withSession(async () => {});
-}
-
-module.exports = { MoodleBrowserError, syncAllCourses, withSession, refreshSession, listEnrolledCourses, discoverCourseFiles };
+module.exports = { MoodleBrowserError, refreshSession };

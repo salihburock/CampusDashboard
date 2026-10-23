@@ -21,6 +21,7 @@ if (!process.env.SESSION_SECRET) {
 const moodle = require('./moodle'); // reads MOODLE_URL, so after .env is loaded
 const moodleBrowser = require('./moodle-browser');
 const moodleHttp = require('./moodle-http');
+const moodleZip = require('./moodle-zip');
 const telegram = require('./telegram-bot');
 const grading = require('./grading');
 const { SUPPORTED_CONVERSIONS, ConversionError, convertFile, convertManyToPdf } = require('./converter');
@@ -507,7 +508,8 @@ async function syncMoodleFiles(paths, code, moodleFiles, downloadFile = (owner, 
     // dir is relative to the docs root; the file name is settled after conversion
     const dir = syllabus ? '' : `materials/${slug}/${sectionDir}`;
     const baseName = syllabus ? `syllabus-${slug}` : name.slice(0, name.length - (ext ? ext.length + 1 : 0));
-    const stamp = `${f.timemodified}:${f.filesize}`;
+    // A file the course zip skipped as already synced brings its old stamp.
+    const stamp = f.stamp || `${f.timemodified}:${f.filesize}`;
     const prev = manifest.files[id];
     // The name must match too (not just stamp/folder), or a rename (e.g. a
     // corrected filename) would never replace the copy from an earlier sync.
@@ -1027,14 +1029,15 @@ app.post('/api/moodle/files', requireUser, async (req, res) => {
   } catch (e) { moodleFail(res, e); }
 });
 
-// ── Browser-based Moodle sync ────────────────────────────────────
-// The webservice REST API (moodle.js) is blocked server-side (institution
-// restricts webservice/rest/server.php to campus IPs), so this drives a
-// real headless Chrome to log in and scrape course pages instead (see
-// moodle-browser.js). It has no HTTP request/session to piggyback paths
-// off of, so it builds them straight from the semester store, and merges
-// results into the stored course data itself (admin.js does this
-// client-side for the webservice path; there's no browser open here).
+// ── Moodle sync with the browser session ─────────────────────────
+// The webservice REST API (moodle.js) is blocked for servers by the
+// university, so this uses the session a headless Chrome login saved
+// (moodle-browser.js): each course is fetched as a zip over plain HTTP
+// (moodle-zip.js, like the LMS Downloader extension's button) and read
+// locally. It has no HTTP request/session to piggyback paths off of, so it
+// builds them straight from the semester store, and merges results into the
+// stored course data itself (admin.js does this client-side for the
+// webservice path; there's no browser open here).
 function getPathsForOwner(owner) {
   ensureUserDirs(owner);
   const sems = loadSemesters(owner);
@@ -1052,12 +1055,44 @@ function emptyCourseItem() {
     syllabus: '', resources: [], homework: [], exams: [], grades: null };
 }
 
-// Finds or creates the course entry for a scraped Moodle course, fills in
-// catalog fields it's missing, and attaches synced files — same matching
-// and precedence rules as admin.js's mergeMoodleCourses/mergeMoodleFiles,
-// minus the homework-deadline sync (the browser path has no calendar data,
-// only files; see below).
-function mergeBrowserCourse(data, { moodleId, code, name, catalog }, { syllabus, resources, homework }) {
+// The course module id a homework row points at (its view.php?id= link).
+const rowCmid = (r) => (/^cm:(\d+)$/.exec(r.moodleId || '') || /[?&]id=(\d+)/.exec(r.url || '') || [])[1] || null;
+
+// Homework rows from a course zip's manifest: assignments with a due date
+// and quizzes with a closing date, from yesterday on, plus assignments of
+// the last two weeks that were never submitted (overdue). Same shape as the
+// webservice sync's rows.
+function homeworkFromManifest(manifest) {
+  const day = (offset) => new Date(Date.now() + offset * 86400000).toLocaleDateString('sv', { timeZone: 'Europe/Istanbul' });
+  const rows = [];
+  for (const sec of manifest.sections || []) {
+    for (const a of sec.activities || []) {
+      const label = a.type === 'assign' ? /^(due|son teslim)/i : a.type === 'quiz' ? /^(closes?|closed|kapan)/i : null;
+      // Without a due date set in Moodle, use one written in the description
+      // ("HW 1 is due 19.10.2026@17:00").
+      const written = a.type === 'assign' && /\bdue\b[^0-9\n]{0,20}(\d{1,2})[./](\d{1,2})[./](\d{4})/i.exec(a.description || '');
+      const due = (label && (a.dates || []).find(d => d.date && label.test(d.label)))
+        || (written && { date: `${written[3]}-${written[2].padStart(2, '0')}-${written[1].padStart(2, '0')}` });
+      if (!due) continue;
+      const keep = due.date >= day(-1) || (a.type === 'assign' && !a.submitted && due.date >= day(-14));
+      if (!keep) continue;
+      rows.push({
+        moodleId: `cm:${a.cmid}`,
+        title: a.name,
+        deadline: due.date,
+        description: a.type === 'quiz' ? 'Quiz' : (a.description || '').replace(/\s+/g, ' ').slice(0, 300),
+        url: a.url || '',
+      });
+    }
+  }
+  return rows.sort((x, y) => x.deadline.localeCompare(y.deadline));
+}
+
+// Finds or creates the course entry for a synced Moodle course, fills in
+// catalog fields it's missing, and attaches synced files, deadlines and
+// grades — same matching and precedence rules as admin.js's
+// mergeMoodleCourses/mergeMoodleFiles.
+function mergeBrowserCourse(data, { moodleId, code, name, catalog }, { syllabus, resources, homework }, { deadlines, grades } = {}) {
   data.sections = data.sections || [];
   let section = data.sections.find(s => s.type === 'courses');
   if (!section) {
@@ -1096,13 +1131,26 @@ function mergeBrowserCourse(data, { moodleId, code, name, catalog }, { syllabus,
     }
   }
 
+  // Deadlines: keep hand-added rows; replace synced ones, keeping any file or
+  // notes added to them. Rows from the webservice sync are keyed by the
+  // assignment's instance id, so they are matched by their link instead.
+  if (deadlines) {
+    const synced = (course.homework || []).filter(h => h.moodleId);
+    const manual = (course.homework || []).filter(h => !h.moodleId);
+    course.homework = [...manual, ...deadlines.map(h => {
+      const prev = synced.find(r => r.moodleId === h.moodleId) || synced.find(r => rowCmid(r) === rowCmid(h));
+      return { ...h, moodleId: prev ? prev.moodleId : h.moodleId, file: prev ? prev.file || '' : '', notes: prev ? prev.notes || '' : '' };
+    })];
+  }
+  if (grades && grades.length) course.grades = grades;
+
   if (syllabus) course.syllabus = syllabus;
   const extra = [];
   const filled = new Set();
   for (const h of homework || []) {
-    // The browser sees an assignment's page id, not the instance id the
-    // webservice sync keyed rows by, so fall back to the assignment's name.
-    const row = (course.homework || []).find(r => r.moodleId === `assign:${h.assignId}`)
+    // Assignment files carry the assignment's page id (cmid); fall back to
+    // the assignment's name.
+    const row = (course.homework || []).find(r => rowCmid(r) === String(h.assignId))
       || (course.homework || []).find(r => h.module && r.title && r.title.trim() === h.module.trim());
     const ownFile = row && row.file && !row.file.startsWith('docs/materials/');
     if (row && !ownFile && !filled.has(row)) { row.file = h.file; filled.add(row); }
@@ -1118,7 +1166,67 @@ const BROWSER_SYNC_OWNER = process.env.MOODLE_SYNC_OWNER || 'salih';
 // What the editor polls while a run is going (one run at a time).
 const browserSync = { running: false, step: '', startedAt: null, finishedAt: null, lastResult: null };
 
-async function browserSyncAllCourses() {
+// Syncs one course ({ id, shortname, fullname } from Moodle's course list)
+// through its zip: files the dashboard already has (by URL, which changes
+// when the file does) are not downloaded again. Returns { merge, stats },
+// merge being mergeBrowserCourse's arguments after `data`.
+async function syncCourseFromZip(paths, course, onStep) {
+  const manifest = loadMoodleManifest(paths);
+  const knownStamp = (url) => {
+    const prev = manifest.files[md5(url.split('?')[0]).slice(0, 12)];
+    return prev && fs.existsSync(path.join(paths.DOCS_DIR, prev.file.replace(/^docs\//, ''))) ? prev.stamp : null;
+  };
+  const zipPath = path.join(os.tmpdir(), `moodle_${course.id}_${Date.now()}.zip`);
+  try {
+    onStep('fetching');
+    const m = await moodleZip.withSession(() => moodleZip.buildZip(course, zipPath, {
+      known: (url) => Boolean(knownStamp(url)), maxBytes: MOODLE_MAX_FILE_BYTES, onProgress: onStep,
+    }));
+    for (const err of m.errors) console.warn(`[moodle-sync] ${course.fullname}: ${err}`);
+    const zip = moodleZip.readZip(zipPath);
+
+    // The zip's files in syncMoodleFiles' shape; files left out of the zip
+    // as known bring their old stamp, so they count as unchanged.
+    const files = [];
+    const byUrl = new Map();
+    for (const sec of m.sections) {
+      for (const a of sec.activities) {
+        if (!['resource', 'folder', 'assign'].includes(a.type)) continue;
+        for (const f of a.files) {
+          if (!f.path && !f.skipped) continue;
+          const name = f.name || path.basename(f.url.split('?')[0]);
+          files.push({
+            section: sec.name, module: a.type === 'folder' ? name : a.name, filename: name, fileurl: f.url,
+            filesize: f.size || 0, timemodified: f.modified || 0, mimetype: f.type || '',
+            ...(f.skipped === 'known' ? { stamp: knownStamp(f.url) } : {}),
+            ...(a.type === 'assign' ? { assignId: a.cmid } : {}),
+          });
+          byUrl.set(f.url, f);
+        }
+      }
+    }
+    const fromZip = async (owner, url, dest) => {
+      const f = byUrl.get(url);
+      if (f && f.path) fs.writeFileSync(dest, zip.read(f.path));
+      else await moodleHttp.download(url, dest); // known, but its old copy can't be reused
+    };
+
+    onStep(`syncing ${files.length} files`);
+    const catalog = catalogLookup(course.shortname, course.fullname);
+    const code = catalog ? catalog.code : course.fullname;
+    const result = await syncMoodleFiles(paths, code, files, fromZip);
+    return {
+      merge: [{ moodleId: course.id, code, name: course.fullname, catalog }, result,
+        { deadlines: homeworkFromManifest(m), grades: m.grades }],
+      stats: result.stats,
+    };
+  } finally {
+    fs.rmSync(zipPath, { force: true });
+  }
+}
+
+// only: a course code ("EE341") to sync just that course.
+async function browserSyncAllCourses(only = null) {
   if (browserSync.running) return { skipped: 'already running' };
   if (!process.env.MOODLE_USERNAME || !process.env.MOODLE_PASSWORD) return { skipped: 'no credentials' };
   Object.assign(browserSync, { running: true, step: 'Starting', startedAt: Date.now(), finishedAt: null });
@@ -1126,34 +1234,36 @@ async function browserSyncAllCourses() {
   try {
     const paths = getPathsForOwner(BROWSER_SYNC_OWNER);
     const merges = [];
-    await moodleBrowser.syncAllCourses(async (course, files, downloadFile) => {
+    browserSync.step = 'Listing courses';
+    const enrolled = await moodleZip.withSession(() => moodleHttp.enrolledCourses());
+    const courses = only ? [moodleZip.findCourse(only, enrolled)] : enrolled;
+    for (const [i, course] of courses.entries()) {
+      const tag = `[${i + 1}/${courses.length}] ${course.fullname}`;
       try {
-        const catalog = catalogLookup(course.name);
-        const code = catalog ? catalog.code : course.name;
-        const result = await syncMoodleFiles(paths, code, files, downloadFile);
-        merges.push([{ moodleId: course.id, code, name: course.name, catalog }, result]);
+        const result = await syncCourseFromZip(paths, course, (step) => { browserSync.step = `${tag}: ${step}`; });
+        merges.push(result.merge);
         const s = result.stats;
-        console.log(`[moodle-browser] ${course.name}: done — ${s.downloaded} downloaded, ${s.unchanged} unchanged, ` +
+        console.log(`[moodle-sync] ${tag}: done — ${s.downloaded} downloaded, ${s.unchanged} unchanged, ` +
           `${s.converted} converted to PDF${s.skipped.length ? `, ${s.skipped.length} too large` : ''}${s.failed.length ? `, ${s.failed.length} failed` : ''}`);
         summary.courses++;
         summary.filesDownloaded += s.downloaded;
         summary.filesConverted += s.converted;
       } catch (e) {
-        console.error(`[moodle-browser] sync failed for course ${course.id} (${course.name}):`, e.message);
-        summary.failed.push(course.name);
+        console.error(`[moodle-sync] sync failed for course ${course.id} (${course.fullname}):`, e.message);
+        summary.failed.push(course.fullname);
       }
-    }, (step) => { browserSync.step = step; });
+    }
 
     // Read the data only now, so edits saved while the sync ran are kept.
     let data;
     try { data = JSON.parse(fs.readFileSync(paths.DATA_FILE, 'utf8')); } catch { data = { sections: [] }; }
-    for (const [course, result] of merges) mergeBrowserCourse(data, course, result);
+    for (const args of merges) mergeBrowserCourse(data, ...args);
     fs.writeFileSync(paths.DATA_FILE, JSON.stringify(data, null, 2));
-    console.log('[moodle-browser] sync done:', summary);
+    console.log('[moodle-sync] sync done:', summary);
     // New syllabi may have arrived; update the grading overview in the background.
     refreshGradingOverview(paths).catch(e => console.error('[grading] refresh failed:', e.message));
   } catch (e) {
-    console.error('[moodle-browser] sync aborted:', e.message);
+    console.error('[moodle-sync] sync aborted:', e.message);
     summary.error = e.message;
     summary.code = e.code;
   } finally {
@@ -1172,11 +1282,53 @@ app.get('/api/moodle/browser-sync', requireUser, (req, res) => {
 
 // Starts a run and returns right away; the editor polls the GET above. A
 // run takes a minute or two, longer than a proxy will hold a request open.
+// Body { course: "EE341" } syncs just that course.
 app.post('/api/moodle/browser-sync', requireUser, (req, res) => {
   if (!browserSyncAvailable(req)) return res.status(403).json({ error: 'Moodle sync is not set up for this account' });
-  if (browserSync.running || gradeCheckRunning) return res.status(409).json({ error: 'A sync is already running', ...browserSync });
-  browserSyncAllCourses();
+  if (browserSync.running || gradeCheckRunning || zipRunning) return res.status(409).json({ error: 'A sync is already running', ...browserSync });
+  browserSyncAllCourses(req.body && typeof req.body.course === 'string' ? req.body.course : null);
   res.status(202).json({ started: true });
+});
+
+// ── Course zips on demand ────────────────────────────────────────
+// One course's Moodle content as a zip (moodle-zip.js), for /zip on
+// Telegram and `agent.js zip`. Always complete (nothing skipped as known);
+// one at a time, and not while a sync or grade check runs.
+let zipRunning = null; // the course asked for, while a zip is being built
+
+const zipFileCount = (m) => m.sections.reduce((n, s) => n + s.activities.reduce((k, a) => k + a.files.filter(f => f.path).length, 0), 0);
+
+// -> { file, manifest, cleanup() }
+async function courseZip(ref) {
+  if (zipRunning || browserSync.running || gradeCheckRunning) {
+    throw Object.assign(new Error('Moodle is busy with another sync; try again in a minute'), { busy: true });
+  }
+  zipRunning = String(ref);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'moodle_zip_'));
+  const cleanup = () => fs.rmSync(dir, { recursive: true, force: true });
+  try {
+    const tmp = path.join(dir, 'course.zip');
+    const manifest = await moodleZip.getZip(ref, tmp, { maxBytes: MOODLE_MAX_FILE_BYTES });
+    const file = path.join(dir, `${courseSlug(manifest.course.shortname || manifest.course.fullname) || `course-${manifest.course.id}`}.zip`);
+    fs.renameSync(tmp, file);
+    return { file, manifest, cleanup };
+  } catch (e) {
+    cleanup();
+    throw e;
+  } finally {
+    zipRunning = null;
+  }
+}
+
+// GET /api/moodle/zip?course=EE341 -> the zip (takes a while: every file).
+app.get('/api/moodle/zip', requireUser, async (req, res) => {
+  if (!browserSyncAvailable(req)) return res.status(403).json({ error: 'Moodle sync is not set up for this account' });
+  const ref = String(req.query.course || '').trim();
+  if (!ref) return res.status(400).json({ error: 'course is required, e.g. ?course=EE341' });
+  let z;
+  try { z = await courseZip(ref); }
+  catch (e) { return res.status(e.busy ? 409 : 502).json({ error: e.message }); }
+  res.download(z.file, path.basename(z.file), () => z.cleanup());
 });
 
 // ── Grade watch ──────────────────────────────────────────────────
@@ -1204,7 +1356,7 @@ function describeGrade(g) {
 let gradeCheckRunning = false;
 let lastGradeCheck = null; // { at, result } for /status
 async function checkGrades() {
-  if (gradeCheckRunning || browserSync.running) return { skipped: 'busy' };
+  if (gradeCheckRunning || browserSync.running || zipRunning) return { skipped: 'busy' };
   const result = await runGradeCheck();
   lastGradeCheck = { at: Date.now(), result };
   return result;
@@ -1522,12 +1674,37 @@ const telegramCommands = {
     },
   },
   sync: {
-    help: 'Sync course files from Moodle now',
-    run: async () => {
+    help: 'Sync from Moodle now (files, deadlines, grades); /sync EE341 for one course',
+    run: async (args) => {
       if (browserSync.running) return `A sync is already running — ${browserSync.step}`;
       if (gradeCheckRunning) return 'A grade check is running; try again in a minute.';
-      browserSyncAllCourses().then(r => sendTelegram(`📁 File sync done: ${describeSync(r)}`));
-      return '📁 File sync started. I will send the result when it is done (usually 1–2 minutes).';
+      if (zipRunning) return `A zip of ${zipRunning} is being built; try again in a minute.`;
+      const only = args.length ? args.join(' ') : null;
+      browserSyncAllCourses(only).then(r => sendTelegram(`📁 Sync${only ? ` of ${only}` : ''} done: ${describeSync(r)}`));
+      return `📁 Sync${only ? ` of ${only}` : ''} started. I will send the result when it is done (usually 1–2 minutes).`;
+    },
+  },
+  zip: {
+    help: 'Send a course\'s Moodle content as a zip, e.g. /zip EE341',
+    run: (args) => {
+      if (!args.length) return 'Which course? e.g. /zip EE341 (or /zip EE341L for the lab).';
+      const ref = args.join(' ');
+      if (zipRunning || browserSync.running || gradeCheckRunning) return 'Moodle is busy with another sync; try again in a minute.';
+      courseZip(ref).then(async (z) => {
+        try {
+          const mb = fs.statSync(z.file).size / 1048576;
+          const caption = `📦 ${z.manifest.course.fullname} — ${zipFileCount(z.manifest)} files` +
+            (z.manifest.errors.length ? `, ${z.manifest.errors.length} could not be fetched` : '');
+          if (mb * 1048576 > telegram.MAX_DOCUMENT_BYTES) {
+            await sendTelegram(`${caption}\nThe zip is ${mb.toFixed(0)} MB, over Telegram's 50 MB limit. Get it on Legion with: node scripts/agent.js zip ${ref}`);
+          } else {
+            await telegram.sendDocument(z.file, caption);
+          }
+        } finally {
+          z.cleanup();
+        }
+      }).catch(e => sendTelegram(`⚠️ zip ${ref} failed: ${e.message}`));
+      return `📦 Building the zip for ${ref}… I will send it when it is ready.`;
     },
   },
 };
