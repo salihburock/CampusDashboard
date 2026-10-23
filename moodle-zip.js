@@ -141,6 +141,10 @@ async function buildZip(course, destPath, { known = () => false, maxBytes = Infi
       // pluginfile URLs carry a revision number that changes with the file;
       // assignment attachments don't, so those are always fetched.
       const bare = entry.url.split('?')[0];
+      if (!entry.name) {
+        entry.name = bare.split('/').pop();
+        try { entry.name = decodeURIComponent(entry.name); } catch {}
+      }
       if (/\/content\/\d+\//.test(bare) && known(bare)) { entry.skipped = 'known'; return; }
       const tmp = path.join(work, `.dl-${act.cmid}-${act.files.length}`);
       const r = await moodleHttp.download(entry.url, tmp, { maxBytes });

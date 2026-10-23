@@ -1204,7 +1204,7 @@ async function syncCourseFromZip(paths, course, onStep) {
         if (!['resource', 'folder', 'assign'].includes(a.type)) continue;
         for (const f of a.files) {
           if (!f.path && !f.skipped) continue;
-          const name = f.name || path.basename(f.url.split('?')[0]);
+          const name = f.name;
           files.push({
             section: sec.name, module: a.type === 'folder' ? name : a.name, filename: name, fileurl: f.url,
             filesize: f.size || 0, timemodified: f.modified || 0, mimetype: f.type || '',
