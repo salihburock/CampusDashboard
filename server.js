@@ -472,11 +472,12 @@ const md5 = s => crypto.createHash('md5').update(s).digest('hex');
 //   { syllabus: "docs/..." | null,
 //     resources: [{title, file, notes, moodleFileId}],
 //     homework:  [{assignId, title, file, notes, moodleFileId}],
-//     stats: { downloaded, unchanged, converted, skipped: [names], failed: [names] } }
+//     stats: { downloaded, unchanged, converted, skipped: [names], failed: [names],
+//              added: ["docs/..." of the files downloaded this time] } }
 // for the frontend to merge into the course item. homework holds the files
 // of assignments, so they can go onto the matching homework row.
 async function syncMoodleFiles(paths, code, moodleFiles, downloadFile = (owner, url, dest) => moodle.downloadFile(owner, url, dest)) {
-  const stats = { downloaded: 0, unchanged: 0, converted: 0, skipped: [], failed: [] };
+  const stats = { downloaded: 0, unchanged: 0, converted: 0, skipped: [], failed: [], added: [] };
   if (!moodleFiles.length) return { syllabus: null, resources: [], homework: [], stats };
   const manifest = loadMoodleManifest(paths);
 
@@ -543,6 +544,7 @@ async function syncMoodleFiles(paths, code, moodleFiles, downloadFile = (owner, 
       fs.mkdirSync(path.join(paths.DOCS_DIR, p.dir), { recursive: true });
       moveFile(src, path.join(paths.DOCS_DIR, rel));
       p.file = `docs/${rel}`;
+      stats.added.push(p.file);
       manifest.files[p.id] = { stamp: p.stamp, file: p.file };
     }
   } finally {
@@ -999,6 +1001,14 @@ app.delete('/api/moodle/connect', requireUser, (req, res) => {
 });
 
 app.get('/api/moodle/courses', requireUser, async (req, res) => {
+  // The webservice is blocked for servers; the sync account lists its
+  // courses through the login session instead.
+  if (browserSyncAvailable(req)) {
+    try {
+      const courses = await moodleZip.withSession(() => moodleHttp.enrolledCourses());
+      return res.json(courses.map(c => ({ id: c.id, code: c.shortname, name: c.fullname, current: true })));
+    } catch (e) { return res.status(502).json({ error: e.message }); }
+  }
   try { res.json(await moodle.listCourses(req.paths.owner)); }
   catch (e) { moodleFail(res, e); }
 });
@@ -1230,7 +1240,9 @@ async function browserSyncAllCourses(only = null) {
   if (browserSync.running) return { skipped: 'already running' };
   if (!process.env.MOODLE_USERNAME || !process.env.MOODLE_PASSWORD) return { skipped: 'no credentials' };
   Object.assign(browserSync, { running: true, step: 'Starting', startedAt: Date.now(), finishedAt: null });
-  const summary = { courses: 0, filesDownloaded: 0, filesConverted: 0, failed: [] };
+  // updates: per course, the files that are new or changed and the deadlines
+  // (for agents asking what changed; see scripts/agent.js sync).
+  const summary = { courses: 0, filesDownloaded: 0, filesConverted: 0, failed: [], updates: [] };
   try {
     const paths = getPathsForOwner(BROWSER_SYNC_OWNER);
     const merges = [];
@@ -1248,6 +1260,10 @@ async function browserSyncAllCourses(only = null) {
         summary.courses++;
         summary.filesDownloaded += s.downloaded;
         summary.filesConverted += s.converted;
+        summary.updates.push({
+          course: result.merge[0].code, moodleId: course.id, newFiles: s.added,
+          deadlines: result.merge[2].deadlines.map(h => ({ title: h.title, deadline: h.deadline, url: h.url })),
+        });
       } catch (e) {
         console.error(`[moodle-sync] sync failed for course ${course.id} (${course.fullname}):`, e.message);
         summary.failed.push(course.fullname);
@@ -1291,12 +1307,10 @@ app.post('/api/moodle/browser-sync', requireUser, (req, res) => {
 });
 
 // ── Course zips on demand ────────────────────────────────────────
-// One course's Moodle content as a zip (moodle-zip.js), for /zip on
-// Telegram and `agent.js zip`. Always complete (nothing skipped as known);
+// One course's Moodle content as a zip (moodle-zip.js), for `agent.js zip`.
+// Always complete (nothing skipped as known);
 // one at a time, and not while a sync or grade check runs.
 let zipRunning = null; // the course asked for, while a zip is being built
-
-const zipFileCount = (m) => m.sections.reduce((n, s) => n + s.activities.reduce((k, a) => k + a.files.filter(f => f.path).length, 0), 0);
 
 // -> { file, manifest, cleanup() }
 async function courseZip(ref) {
@@ -1682,29 +1696,6 @@ const telegramCommands = {
       const only = args.length ? args.join(' ') : null;
       browserSyncAllCourses(only).then(r => sendTelegram(`📁 Sync${only ? ` of ${only}` : ''} done: ${describeSync(r)}`));
       return `📁 Sync${only ? ` of ${only}` : ''} started. I will send the result when it is done (usually 1–2 minutes).`;
-    },
-  },
-  zip: {
-    help: 'Send a course\'s Moodle content as a zip, e.g. /zip EE341',
-    run: (args) => {
-      if (!args.length) return 'Which course? e.g. /zip EE341 (or /zip EE341L for the lab).';
-      const ref = args.join(' ');
-      if (zipRunning || browserSync.running || gradeCheckRunning) return 'Moodle is busy with another sync; try again in a minute.';
-      courseZip(ref).then(async (z) => {
-        try {
-          const mb = fs.statSync(z.file).size / 1048576;
-          const caption = `📦 ${z.manifest.course.fullname} — ${zipFileCount(z.manifest)} files` +
-            (z.manifest.errors.length ? `, ${z.manifest.errors.length} could not be fetched` : '');
-          if (mb * 1048576 > telegram.MAX_DOCUMENT_BYTES) {
-            await sendTelegram(`${caption}\nThe zip is ${mb.toFixed(0)} MB, over Telegram's 50 MB limit. Get it on Legion with: node scripts/agent.js zip ${ref}`);
-          } else {
-            await telegram.sendDocument(z.file, caption);
-          }
-        } finally {
-          z.cleanup();
-        }
-      }).catch(e => sendTelegram(`⚠️ zip ${ref} failed: ${e.message}`));
-      return `📦 Building the zip for ${ref}… I will send it when it is ready.`;
     },
   },
 };
