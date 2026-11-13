@@ -15,6 +15,10 @@
 // in when the saved session has expired. MFA is not expected on every
 // login (per account settings); if it is hit, the run aborts rather than
 // hanging or retrying blindly.
+//
+// Without credentials nothing here signs in: the session file is then
+// supplied from outside (e.g. `campdash` copying the LMS cookie from the
+// owner's own browser), and an expired session is reported, not renewed.
 
 const fs = require('fs');
 const path = require('path');
@@ -227,6 +231,9 @@ async function ensureSession(context, page) {
 // browser is open only for the login, then closed: short-lived on a
 // RAM-constrained box, not a persistent process.
 async function refreshSession() {
+  if (!process.env.MOODLE_USERNAME || !process.env.MOODLE_PASSWORD) {
+    throw new MoodleBrowserError('Moodle session expired: open the LMS in Chrome on your laptop, then run any campdash command', 'SESSION_EXPIRED');
+  }
   const browser = await chromium.launch({ executablePath: CHROME_PATH, headless: true });
   try {
     const contextOptions = {};
