@@ -391,7 +391,7 @@ async function classifyCourseFilesWithLlm(code, filenames) {
           max_tokens: 1024, // reasoning models spend part of this before answering
           temperature: 0.1,
         }),
-        signal: AbortSignal.timeout(30000),
+        signal: AbortSignal.timeout(90000),
       });
       if (res.ok) {
         const parsed = parseClassifyResponse((await res.json()).choices?.[0]?.message?.content, filenames);
@@ -400,6 +400,10 @@ async function classifyCourseFilesWithLlm(code, filenames) {
         console.error(`Syllabus LLM API returned HTTP ${res.status}, falling back`);
       }
     } catch (e) { console.error('Syllabus LLM API failed, falling back:', e.message); }
+    // The small local models below picked an announcements file as the
+    // syllabus where the API model wouldn't; when the API is set up, fall back
+    // to filenames only, and don't let the answer be cached (retry next sync).
+    return { ...regexFallbackClassify(code, filenames), fallback: true };
   }
   try {
     const ping = await fetch(`${OLLAMA_HOST}/api/tags`, { signal: AbortSignal.timeout(2000) });
@@ -487,11 +491,12 @@ async function syncMoodleFiles(paths, code, moodleFiles, downloadFile = (owner, 
   const listKey = md5(code + '\n' + moodleFiles.map(f => `${f.filename} ${f.fileurl.split('?')[0]}`).join('\n'));
   let cls = manifest.courses[listKey];
   if (!cls) {
-    const { slug, syllabusIndex } = await classifyCourseFilesWithLlm(code, names);
-    cls = manifest.courses[listKey] = {
+    const { slug, syllabusIndex, fallback } = await classifyCourseFilesWithLlm(code, names);
+    cls = {
       slug: /^[a-z0-9-]+$/.test(slug) ? slug : regexFallbackClassify(code, []).slug,
       syllabusUrl: syllabusIndex >= 0 ? moodleFiles[syllabusIndex].fileurl : null,
     };
+    if (!fallback) manifest.courses[listKey] = cls;
   }
   // The folder name comes from the course code when there is one, so it
   // stays the same across syncs; the LLM's slug is only for messy names.
@@ -616,9 +621,11 @@ function courseSlug(text) {
     .normalize('NFD').replace(/[^a-z0-9]/g, '') || null;
 }
 
+// Letters only before lab/hw/ch: "_" is a word character, so \b would miss
+// "EE301_Lab1".
 function looksLikeCoursework(name) {
   return !/syllabus|izlence|outline/i.test(name) &&
-    /week|hafta|lecture|slide|homework|\bhw\d|\blab|quiz|exam|midterm|final|chapter|\bch\d/i.test(name);
+    /week|hafta|lecture|slide|homework|(?<![a-z])hw\d|(?<![a-z])lab|quiz|exam|midterm|final|chapter|(?<![a-z])ch\d|announcement|duyuru|notes/i.test(name);
 }
 
 function catalogLookup(...texts) {
