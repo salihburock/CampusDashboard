@@ -1174,6 +1174,9 @@ function mergeBrowserCourse(data, { moodleId, code, name, catalog }, { syllabus,
   return created;
 }
 
+// The session comes from a login with MOODLE_USERNAME/PASSWORD, or without
+// them from the owner's own browser (campdash copies the cookie); either way
+// it is in userdata/.moodle-browser-session.json.
 const BROWSER_SYNC_OWNER = process.env.MOODLE_SYNC_OWNER || '';
 // What the editor polls while a run is going (one run at a time).
 const browserSync = { running: false, step: '', startedAt: null, finishedAt: null, lastResult: null };
@@ -1240,7 +1243,6 @@ async function syncCourseFromZip(paths, course, onStep) {
 // only: a course code ("EE341") to sync just that course.
 async function browserSyncAllCourses(only = null) {
   if (browserSync.running) return { skipped: 'already running' };
-  if (!process.env.MOODLE_USERNAME || !process.env.MOODLE_PASSWORD) return { skipped: 'no credentials' };
   if (!BROWSER_SYNC_OWNER) return { skipped: 'MOODLE_SYNC_OWNER is not set' };
   Object.assign(browserSync, { running: true, step: 'Starting', startedAt: Date.now(), finishedAt: null });
   // updates: per course, the files that are new or changed and the deadlines
@@ -1292,7 +1294,7 @@ async function browserSyncAllCourses(only = null) {
 }
 
 function browserSyncAvailable(req) {
-  return Boolean(process.env.MOODLE_USERNAME && process.env.MOODLE_PASSWORD) && req.paths.owner === BROWSER_SYNC_OWNER;
+  return Boolean(BROWSER_SYNC_OWNER) && req.paths.owner === BROWSER_SYNC_OWNER;
 }
 
 app.get('/api/moodle/browser-sync', requireUser, (req, res) => {
@@ -1523,7 +1525,7 @@ app.post('/api/moodle/grades/check', requireUser, async (req, res) => {
 // Runs every intervalMinutes (default 60), aligned to the clock (e.g. on the
 // hour); never at startup, so restarts don't add requests. Pause and interval
 // survive restarts. Telegram commands (TELEGRAM_COMMANDS=on) control it.
-const GRADE_WATCH_ENABLED = process.env.MOODLE_GRADE_WATCH === 'on' && Boolean(BROWSER_SYNC_OWNER && process.env.MOODLE_USERNAME && process.env.MOODLE_PASSWORD);
+const GRADE_WATCH_ENABLED = process.env.MOODLE_GRADE_WATCH === 'on' && Boolean(BROWSER_SYNC_OWNER);
 const MIN_INTERVAL_MIN = 30, MAX_INTERVAL_MIN = 24 * 60;
 const watchSettingsPath = () => path.join(__dirname, 'userdata', BROWSER_SYNC_OWNER, 'grade-watch-settings.json');
 
