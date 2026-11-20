@@ -1,35 +1,42 @@
 // ── Moodle sign-in through a real browser ───────────────────────
 // The webservice REST API (moodle.js) is blocked for servers by the
 // university (403 on webservice/rest/server.php), while ordinary site
-// browsing with a logged-in session is not. This signs in like a person
-// would (Microsoft Entra ID SSO, then an authenticator code) and saves the
-// Moodle session cookie; everything else (course zips, grades) is fetched
-// with it over plain HTTP (moodle-http.js, moodle-zip.js).
+// browsing with a logged-in session is not. Everything (course zips,
+// grades) is fetched over plain HTTP (moodle-http.js, moodle-zip.js) with the
+// Moodle session cookie in userdata/.moodle-browser-session.json; this file
+// renews that cookie when Moodle says it expired.
 //
-// The sign-in runs in its own process (`node moodle-browser.js login`), so
-// the password and TOTP key are read only there, never by the web server.
-// They come from MOODLE_LOGIN_FILE (default ~/.config/campdash/moodle-login,
-// KEY=VALUE lines, readable only by you), or else from the environment:
-//   MOODLE_USERNAME, MOODLE_PASSWORD, MOODLE_TOTP_SECRET
-// MOODLE_TOTP_SECRET is the key of an "other authenticator app" sign-in
-// method on the account; its 6-digit code is entered at the MFA step.
+// Moodle's session is short-lived, but it is renewed through Microsoft's
+// sign-in (Entra ID SSO), whose own "Stay signed in" cookie lasts much longer
+// and only works in a browser. So the server keeps a Chrome profile of its
+// own (MOODLE_BROWSER_PROFILE, default ~/.config/campdash/chrome-profile) and
+// renews in two steps:
+//   1. A plain Chrome (started like a person would, nothing driving it)
+//      opens the LMS with that profile; while Microsoft still knows the
+//      browser it signs in without a password. Chrome is closed normally and
+//      the new Moodle cookie is read from the profile (browser_cookie3).
+//   2. Only if that didn't sign in (first run, or Microsoft forgot the
+//      browser), a scripted sign-in types the password and the authenticator
+//      code into the same profile and answers "Stay signed in?" with yes.
+// Chrome is shown on MOODLE_LOGIN_DISPLAY (e.g. ":0"), headless when empty.
 //
-// The browser is the system's Chrome (no `playwright install` needed) with a
-// fresh profile each time: a normal window without automation flags on
-// MOODLE_LOGIN_DISPLAY (e.g. ":0"), or headless when that is empty. Only the
-// Moodle cookies are kept.
+// Step 2's details come from MOODLE_LOGIN_FILE (default
+// ~/.config/campdash/moodle-login, KEY=VALUE lines, readable only by you),
+// or else the environment: MOODLE_USERNAME, MOODLE_PASSWORD and
+// MOODLE_TOTP_SECRET (the key of an "other authenticator app" sign-in
+// method). The renewal runs in its own process (`node moodle-browser.js
+// login`), so the web server never reads them.
 //
-// The server signs in by itself when the session has expired. After a failed
-// attempt it stops (no retry loop that could lock the account) until a manual
-// `node moodle-browser.js login` (`campdash login`) succeeds. Without sign-in
-// details nothing signs in; the session file can then come from elsewhere
-// (campdash copies the LMS cookie from Chrome on your laptop).
+// The server renews by itself when the session has expired. After a failed
+// attempt it stops (no retry loop that could lock the account or keep
+// loading the LMS) until a manual `node moodle-browser.js login`
+// (`campdash login`) succeeds.
 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 
 // Run directly (not required by server.js): settings come from .env.
 if (require.main === module) {
@@ -43,6 +50,9 @@ const SESSION_STATE_PATH = path.join(USERDATA, '.moodle-browser-session.json');
 const FAILED_PATH = path.join(USERDATA, '.moodle-login-failed.json');
 const FAILED_SHOT_PATH = path.join(USERDATA, '.moodle-login-failed.png');
 
+const home = (p) => p.replace(/^~(?=\/|$)/, os.homedir());
+const PROFILE_DIR = home(process.env.MOODLE_BROWSER_PROFILE || '~/.config/campdash/chrome-profile');
+
 class MoodleBrowserError extends Error {
   constructor(message, code) { super(message); this.code = code; }
 }
@@ -50,13 +60,15 @@ class MoodleBrowserError extends Error {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const onMoodle = (url) => url.startsWith(MOODLE_URL) && !url.includes('login.microsoftonline');
 
-function loginFilePath() {
-  const file = process.env.MOODLE_LOGIN_FILE || '~/.config/campdash/moodle-login';
-  return file.replace(/^~(?=\/|$)/, os.homedir());
+function chromeEnv() {
+  const display = process.env.MOODLE_LOGIN_DISPLAY || '';
+  return display
+    ? { ...process.env, DISPLAY: display, XAUTHORITY: process.env.XAUTHORITY || path.join(os.homedir(), '.Xauthority') }
+    : process.env;
 }
 
 function readCredentials() {
-  const file = loginFilePath();
+  const file = home(process.env.MOODLE_LOGIN_FILE || '~/.config/campdash/moodle-login');
   const values = {};
   if (fs.existsSync(file)) {
     if (fs.statSync(file).mode & 0o077) {
@@ -94,53 +106,65 @@ function totp(secret, step) {
   return String((h.readUInt32BE(o) & 0x7fffffff) % 1e6).padStart(6, '0');
 }
 
+// ── Step 1: a plain Chrome ──────────────────────────────────────
+
+// Opens url in Chrome with the profile, nothing driving it, waits, then
+// closes it like closing the window does (SIGTERM is a normal shutdown), so
+// Chrome writes its cookies to disk.
+async function browserVisit(url, profileDir = PROFILE_DIR, waitMs = 20000) {
+  fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
+  const args = [`--user-data-dir=${profileDir}`, '--password-store=basic', '--no-first-run', '--no-default-browser-check', '--new-window'];
+  if (!process.env.MOODLE_LOGIN_DISPLAY) args.push('--headless=new');
+  const chrome = spawn(CHROME_PATH, [...args, url], { env: chromeEnv(), stdio: 'ignore' });
+  const exited = new Promise((resolve) => chrome.on('exit', resolve));
+  await Promise.race([sleep(waitMs), exited]);
+  chrome.kill('SIGTERM');
+  if (!(await Promise.race([exited.then(() => true), sleep(15000).then(() => false)]))) chrome.kill('SIGKILL');
+}
+
+// The profile's cookies for host, decrypted by browser_cookie3 (Python).
+function readBrowserCookies(host, profileDir = PROFILE_DIR) {
+  const file = ['Default/Network/Cookies', 'Default/Cookies'].map((f) => path.join(profileDir, f))
+    .filter((f) => fs.existsSync(f)).sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
+  if (!file) return [];
+  const py = 'import json, sys, browser_cookie3\n' +
+    'jar = browser_cookie3.chrome(cookie_file=sys.argv[1], domain_name=sys.argv[2])\n' +
+    'print(json.dumps([{"name": c.name, "value": c.value, "domain": c.domain, "path": c.path, ' +
+    '"secure": bool(c.secure), "expires": c.expires or -1} for c in jar]))';
+  const r = spawnSync('python3', ['-c', py, file, host], { encoding: 'utf8' });
+  if (r.status) throw new Error(`reading Chrome's cookies failed: ${(r.stderr || '').trim().split('\n').pop()}`);
+  return JSON.parse(r.stdout);
+}
+
+// ── Step 2: the scripted sign-in ────────────────────────────────
+
 async function login(page, { username, password, totpSecret }) {
   await page.goto(`${MOODLE_URL}/login/index.php`, { waitUntil: 'domcontentloaded' });
+  const nameRx = new RegExp(username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
 
-  // Email step. fill() doesn't always trigger the input-validation JS that
-  // enables the Next button, so submit with Enter instead of clicking it.
-  await page.waitForSelector('#i0116', { timeout: 30000 });
-  await page.fill('#i0116', username);
-  await page.press('#i0116', 'Enter');
-
-  // Some accounts get a "Choose a way to sign in" interstitial before the
-  // password field, defaulting to an Authenticator push; force password.
-  // Client-rendered (SPA), so actively wait rather than snapshot the DOM.
-  const useMyPassword = page.locator('text=Use my password').first();
-  const passwordField = page.locator('#i0118').first();
-  await Promise.race([
-    useMyPassword.waitFor({ state: 'visible', timeout: 30000 }).catch(() => {}),
-    passwordField.waitFor({ state: 'visible', timeout: 30000 }).catch(() => {}),
-  ]);
-  // Microsoft's SPA animates screens in (opacity transition); Playwright's
-  // "visible" check passes mid-animation, before the element is really
-  // interactable. Give the transition time to finish.
-  await page.waitForTimeout(1500);
-  if (await useMyPassword.isVisible().catch(() => false)) {
-    await useMyPassword.click();
-    await page.waitForTimeout(1500);
-  }
-  await page.waitForSelector('#i0118', { state: 'visible', timeout: 30000 });
-  await page.waitForTimeout(1500);
-  await page.fill('#i0118', password);
-  await page.press('#i0118', 'Enter');
-  await page.waitForTimeout(1500);
-
-  // Then: the second factor, "Stay signed in?", or straight back to Moodle.
-  let lastStep = -1, codesEntered = 0;
-  for (let i = 0; i < 10 && !onMoodle(page.url()); i++) {
+  // Microsoft's screens come in varying order (it remembers this profile's
+  // account, may skip the password or ask for the second factor in different
+  // ways), so act on whichever is showing until back on Moodle.
+  let lastStep = -1, codesEntered = 0, emailsEntered = 0, passwordsEntered = 0;
+  for (let i = 0; i < 15 && !onMoodle(page.url()); i++) {
     const screens = {
+      error: page.locator('#usernameError, #passwordError').first(),
+      password: page.locator('#i0118'),
+      email: page.locator('#i0116'),
+      usePassword: page.locator('text=Use my password').first(),
       codeInput: page.locator('input[name="otc"], #idTxtBx_SAOTCC_OTC').first(),
       codeChoice: page.locator('text=/Use a verification code/i').first(),
       pushWait: page.locator('text=/Approve sign.?in/i').first(),
       otherWay: page.locator('#signInAnotherWay').or(page.getByText(/can.t use my Microsoft Authenticator app/i)).first(),
       staySignedIn: page.locator('text=Stay signed in').first(),
-      error: page.locator('#usernameError, #passwordError').first(),
+      account: page.locator(`[data-test-id="${username}"]`).or(page.getByRole('button', { name: nameRx })).first(),
     };
+    // Client-rendered (SPA): wait for a screen rather than snapshot the DOM.
     await Promise.race([
       ...Object.values(screens).map((l) => l.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {})),
       page.waitForURL((u) => onMoodle(u.toString()), { timeout: 15000 }).catch(() => {}),
     ]);
+    // Screens animate in; "visible" passes mid-animation, before they take input.
     await page.waitForTimeout(1500);
     if (onMoodle(page.url())) break;
     const visible = (name) => screens[name].isVisible().catch(() => false);
@@ -148,6 +172,21 @@ async function login(page, { username, password, totpSecret }) {
     if (await visible('error')) {
       throw new MoodleBrowserError(`Login rejected: ${(await screens.error.textContent()).trim()}`, 'LOGIN_FAILED');
     }
+    // fill() doesn't always trigger the validation JS that enables the Next
+    // button, so submit with Enter instead of clicking it.
+    if (await visible('password')) {
+      if (passwordsEntered++) throw new MoodleBrowserError('Microsoft asked for the password again', 'LOGIN_FAILED');
+      await screens.password.fill(password);
+      await screens.password.press('Enter');
+      continue;
+    }
+    if (await visible('email')) {
+      if (emailsEntered++) throw new MoodleBrowserError('Microsoft asked for the email again', 'LOGIN_FAILED');
+      await screens.email.fill(username);
+      await screens.email.press('Enter');
+      continue;
+    }
+    if (await visible('usePassword')) { await screens.usePassword.click(); continue; }
     if (await visible('codeInput')) {
       if (!totpSecret) throw new MoodleBrowserError('Microsoft asks for an authenticator code and MOODLE_TOTP_SECRET is not set', 'LOGIN_FAILED');
       // A rejected code gets one more try with the next code, then stop:
@@ -168,32 +207,28 @@ async function login(page, { username, password, totpSecret }) {
     if (await visible('codeChoice')) { await screens.codeChoice.click(); continue; }
     // The Authenticator push (the account's default method): switch to the code.
     if (await visible('pushWait') && await visible('otherWay')) { await screens.otherWay.click(); continue; }
+    // Yes: Microsoft then remembers this browser, which step 1 relies on.
     if (await visible('staySignedIn')) { await page.click('#idSIButton9'); continue; }
+    // "Pick an account" (checked last: other screens show the email too).
+    if (await visible('account')) { await screens.account.click(); continue; }
     throw new MoodleBrowserError('Unexpected screen during the Microsoft sign-in', 'LOGIN_FAILED');
   }
   if (!onMoodle(page.url())) throw new MoodleBrowserError('Did not get back to Moodle after signing in', 'LOGIN_FAILED');
 }
 
-async function signIn() {
-  const creds = readCredentials();
-  if (!creds.username || !creds.password) {
-    throw new MoodleBrowserError(`No Moodle sign-in details (MOODLE_USERNAME/MOODLE_PASSWORD in ${creds.file})`, 'NO_CREDENTIALS');
-  }
+async function scriptedSignIn(creds) {
   const { chromium } = require('playwright-core');
-  const display = process.env.MOODLE_LOGIN_DISPLAY || '';
-  const browser = await chromium.launch({
+  fs.mkdirSync(PROFILE_DIR, { recursive: true, mode: 0o700 });
+  const context = await chromium.launchPersistentContext(PROFILE_DIR, {
     executablePath: CHROME_PATH,
-    headless: !display,
+    headless: !process.env.MOODLE_LOGIN_DISPLAY,
     // A normal-looking Chrome: no "controlled by automated software" flag.
     ignoreDefaultArgs: ['--enable-automation'],
     args: ['--disable-blink-features=AutomationControlled'],
-    env: display
-      ? { ...process.env, DISPLAY: display, XAUTHORITY: process.env.XAUTHORITY || path.join(os.homedir(), '.Xauthority') }
-      : process.env,
+    env: chromeEnv(),
   });
   try {
-    const context = await browser.newContext();
-    const page = await context.newPage();
+    const page = context.pages()[0] || await context.newPage();
     try {
       try {
         await login(page, creds);
@@ -208,22 +243,53 @@ async function signIn() {
       await page.screenshot({ path: FAILED_SHOT_PATH }).catch(() => {});
       throw e;
     }
-    // Keep only Moodle's cookies; Microsoft's could sign in elsewhere.
-    const host = new URL(MOODLE_URL).hostname;
-    const cookies = (await context.cookies()).filter((c) => {
-      const d = c.domain.replace(/^\./, '');
-      return host === d || host.endsWith('.' + d);
-    });
-    const tmp = SESSION_STATE_PATH + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify({ cookies, origins: [] }, null, 2), { mode: 0o600 });
-    fs.renameSync(tmp, SESSION_STATE_PATH);
+    return await context.cookies();
   } finally {
-    await browser.close();
+    await context.close();
   }
 }
 
-// `login`: signs in unless the saved session still works (--force: always).
-// `login --auto` (the server, after the session expired): signs in, unless an
+// ── Renewal ─────────────────────────────────────────────────────
+
+// Keeps only Moodle's cookies: Microsoft's stay in the Chrome profile.
+function saveSession(cookies) {
+  const host = new URL(MOODLE_URL).hostname;
+  const mine = cookies.filter((c) => {
+    const d = c.domain.replace(/^\./, '');
+    return host === d || host.endsWith('.' + d);
+  });
+  const tmp = SESSION_STATE_PATH + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify({ cookies: mine, origins: [] }, null, 2), { mode: 0o600 });
+  fs.renameSync(tmp, SESSION_STATE_PATH);
+}
+
+async function sessionWorks() {
+  const moodleHttp = require('./moodle-http');
+  try {
+    await moodleHttp.getPage('/my/');
+    return true;
+  } catch (e) {
+    if (e instanceof moodleHttp.SessionExpiredError) return false;
+    throw e;
+  }
+}
+
+async function signIn() {
+  if (fs.existsSync(PROFILE_DIR)) {
+    await browserVisit(`${MOODLE_URL}/my/`);
+    saveSession(readBrowserCookies(new URL(MOODLE_URL).hostname));
+    if (await sessionWorks()) return 'Signed in to Moodle (the browser was still signed in to Microsoft)';
+  }
+  const creds = readCredentials();
+  if (!creds.username || !creds.password) {
+    throw new MoodleBrowserError(`The browser isn't signed in to Microsoft and there are no sign-in details (MOODLE_USERNAME/MOODLE_PASSWORD in ${creds.file})`, 'NO_CREDENTIALS');
+  }
+  saveSession(await scriptedSignIn(creds));
+  return 'Signed in to Moodle (password and authenticator code)';
+}
+
+// `login`: renews unless the saved session still works (--force: always).
+// `login --auto` (the server, after the session expired): renews, unless an
 // earlier automatic attempt failed and no manual one has succeeded since.
 async function cli(args) {
   const auto = args.includes('--auto');
@@ -231,28 +297,23 @@ async function cli(args) {
     const failed = JSON.parse(fs.readFileSync(FAILED_PATH, 'utf8'));
     throw new MoodleBrowserError(`automatic sign-in is paused since it failed on ${new Date(failed.at).toLocaleString('en-GB')} (${failed.message}); run campdash login`, 'LOGIN_PAUSED');
   }
-  if (!auto && !args.includes('--force')) {
-    const moodleHttp = require('./moodle-http');
-    try {
-      await moodleHttp.getPage('/my/');
-      return 'Already signed in to Moodle (--force signs in again)';
-    } catch (e) {
-      if (!(e instanceof moodleHttp.SessionExpiredError)) throw e;
-    }
+  if (!auto && !args.includes('--force') && await sessionWorks()) {
+    return 'Already signed in to Moodle (--force renews anyway)';
   }
+  let result;
   try {
-    await signIn();
+    result = await signIn();
   } catch (e) {
-    if (e.code !== 'NO_CREDENTIALS') fs.writeFileSync(FAILED_PATH, JSON.stringify({ at: Date.now(), message: e.message }));
+    fs.writeFileSync(FAILED_PATH, JSON.stringify({ at: Date.now(), message: e.message }));
     throw e;
   }
   fs.rmSync(FAILED_PATH, { force: true });
   fs.rmSync(FAILED_SHOT_PATH, { force: true });
-  return 'Signed in to Moodle';
+  return result;
 }
 
-// Called by the server when Moodle says the session expired: signs in again
-// in a child process. Concurrent callers share one attempt.
+// Called by the server when Moodle says the session expired: renews it in a
+// child process. Concurrent callers share one attempt.
 let refreshing = null;
 function refreshSession() {
   if (refreshing) return refreshing;
@@ -282,4 +343,4 @@ if (require.main === module) {
   cli(args).then((msg) => console.log(msg), (e) => { console.log(e.message); process.exitCode = 1; });
 }
 
-module.exports = { MoodleBrowserError, refreshSession };
+module.exports = { MoodleBrowserError, refreshSession, browserVisit, readBrowserCookies };
