@@ -138,11 +138,10 @@ function readBrowserCookies(host, profileDir = PROFILE_DIR) {
 
 // ── Step 2: the scripted sign-in ────────────────────────────────
 
-// Types a value and submits it with Enter. Microsoft's page can redraw a
-// field right after showing it (seen live: the email was typed, then an
-// empty field was submitted), so check the value held before pressing Enter.
-// fill() doesn't always trigger the validation JS that enables the Next
-// button; Enter submits regardless.
+// Types a value and submits it with Enter, after checking the field kept it
+// (the page may still be setting the field up). fill() doesn't always
+// trigger the validation JS that enables the Next button; Enter submits
+// regardless.
 async function enterValue(page, field, value) {
   for (let attempt = 0; attempt < 3; attempt++) {
     await field.fill(value);
@@ -186,25 +185,27 @@ async function login(page, { username, password, totpSecret }) {
     await page.waitForTimeout(1500);
     if (onMoodle(page.url())) break;
     const visible = (name) => screens[name].isVisible().catch(() => false);
+    // After acting on a screen, wait for it to leave: screens slide out
+    // slowly, and seeing the old one again meant acting on it twice (seen
+    // live: the email submitted a second time mid-transition, empty).
+    const leave = (name) => screens[name].waitFor({ state: 'hidden', timeout: 10000 }).catch(() => {});
 
     if (await visible('error')) {
-      const text = (await screens.error.textContent().catch(() => '') || '').trim();
-      // "Enter a valid email" after our first try: the field was likely
-      // redrawn; enter it once more (below). Anything else is a rejection.
-      const retryEmail = emailsEntered === 1 && /valid email/i.test(text) && await visible('email');
-      if (!retryEmail) throw new MoodleBrowserError(`Login rejected: ${text}`, 'LOGIN_FAILED');
+      throw new MoodleBrowserError(`Login rejected: ${(await screens.error.textContent().catch(() => '') || '').trim()}`, 'LOGIN_FAILED');
     }
     if (await visible('password')) {
       if (passwordsEntered++) throw new MoodleBrowserError('Microsoft asked for the password again', 'LOGIN_FAILED');
       await enterValue(page, screens.password, password);
+      await leave('password');
       continue;
     }
     if (await visible('email')) {
-      if (emailsEntered++ === 2) throw new MoodleBrowserError('Microsoft asked for the email again', 'LOGIN_FAILED');
+      if (emailsEntered++) throw new MoodleBrowserError('Microsoft asked for the email again', 'LOGIN_FAILED');
       await enterValue(page, screens.email, username);
+      await leave('email');
       continue;
     }
-    if (await visible('usePassword')) { await screens.usePassword.click(); continue; }
+    if (await visible('usePassword')) { await screens.usePassword.click(); await leave('usePassword'); continue; }
     if (await visible('codeInput')) {
       if (!totpSecret) throw new MoodleBrowserError('Microsoft asks for an authenticator code and MOODLE_TOTP_SECRET is not set', 'LOGIN_FAILED');
       // A rejected code gets one more try with the next code, then stop:
@@ -220,15 +221,16 @@ async function login(page, { username, password, totpSecret }) {
       codesEntered++;
       await screens.codeInput.fill(totp(totpSecret, step));
       await screens.codeInput.press('Enter');
+      await leave('codeInput');
       continue;
     }
-    if (await visible('codeChoice')) { await screens.codeChoice.click(); continue; }
+    if (await visible('codeChoice')) { await screens.codeChoice.click(); await leave('codeChoice'); continue; }
     // The Authenticator push (the account's default method): switch to the code.
-    if (await visible('pushWait') && await visible('otherWay')) { await screens.otherWay.click(); continue; }
+    if (await visible('pushWait') && await visible('otherWay')) { await screens.otherWay.click(); await leave('pushWait'); continue; }
     // Yes: Microsoft then remembers this browser, which step 1 relies on.
-    if (await visible('staySignedIn')) { await page.click('#idSIButton9'); continue; }
+    if (await visible('staySignedIn')) { await page.click('#idSIButton9'); await leave('staySignedIn'); continue; }
     // "Pick an account" (checked last: other screens show the email too).
-    if (await visible('account')) { await screens.account.click(); continue; }
+    if (await visible('account')) { await screens.account.click(); await leave('account'); continue; }
     throw new MoodleBrowserError('Unexpected screen during the Microsoft sign-in', 'LOGIN_FAILED');
   }
   if (!onMoodle(page.url())) throw new MoodleBrowserError('Did not get back to Moodle after signing in', 'LOGIN_FAILED');
