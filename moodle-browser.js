@@ -138,16 +138,24 @@ function readBrowserCookies(host, profileDir = PROFILE_DIR) {
 
 // ── Step 2: the scripted sign-in ────────────────────────────────
 
-// Types a value and submits it with Enter, after checking the field kept it
-// (the page may still be setting the field up). fill() doesn't always
-// trigger the validation JS that enables the Next button; Enter submits
-// regardless.
-async function enterValue(page, field, value) {
-  for (let attempt = 0; attempt < 3; attempt++) {
-    await field.fill(value);
-    await page.waitForTimeout(700);
+// Types a value key by key like a person (about 100 words a minute, with
+// longer pauses around "." and "@") and submits it with Enter. With fill(),
+// which sets the value without key presses, Microsoft's page submitted the
+// email as empty (seen live).
+async function typeAndSubmit(page, field, value) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await field.click();
+    await page.keyboard.press('Control+A');
+    await page.keyboard.press('Backspace');
+    for (const ch of value) {
+      const slow = ch === '.' || ch === '@';
+      if (slow) await sleep(250 + Math.random() * 250);
+      await page.keyboard.type(ch);
+      await sleep(slow ? 250 + Math.random() * 250 : 80 + Math.random() * 80);
+    }
+    await sleep(400 + Math.random() * 400);
     if ((await field.inputValue().catch(() => '')) === value) {
-      await field.press('Enter');
+      await page.keyboard.press('Enter');
       return;
     }
   }
@@ -195,13 +203,13 @@ async function login(page, { username, password, totpSecret }) {
     }
     if (await visible('password')) {
       if (passwordsEntered++) throw new MoodleBrowserError('Microsoft asked for the password again', 'LOGIN_FAILED');
-      await enterValue(page, screens.password, password);
+      await typeAndSubmit(page, screens.password, password);
       await leave('password');
       continue;
     }
     if (await visible('email')) {
       if (emailsEntered++) throw new MoodleBrowserError('Microsoft asked for the email again', 'LOGIN_FAILED');
-      await enterValue(page, screens.email, username);
+      await typeAndSubmit(page, screens.email, username);
       await leave('email');
       continue;
     }
@@ -212,15 +220,15 @@ async function login(page, { username, password, totpSecret }) {
       // repeated wrong codes can lock the account. A code is never reused.
       if (codesEntered === 2) throw new MoodleBrowserError('Microsoft rejected the authenticator code twice; check MOODLE_TOTP_SECRET', 'LOGIN_FAILED');
       let step = Math.floor(Date.now() / 30000);
-      if (step === lastStep) {
+      // Typing takes a second or two: don't start a code about to expire.
+      if (step === lastStep || 30000 - (Date.now() % 30000) < 4000) {
         await sleep(30000 - (Date.now() % 30000) + 500);
         if (!(await visible('codeInput'))) continue;
         step = Math.floor(Date.now() / 30000);
       }
       lastStep = step;
       codesEntered++;
-      await screens.codeInput.fill(totp(totpSecret, step));
-      await screens.codeInput.press('Enter');
+      await typeAndSubmit(page, screens.codeInput, totp(totpSecret, step));
       await leave('codeInput');
       continue;
     }
