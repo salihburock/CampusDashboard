@@ -138,8 +138,26 @@ function readBrowserCookies(host, profileDir = PROFILE_DIR) {
 
 // ── Step 2: the scripted sign-in ────────────────────────────────
 
+// Types a value and submits it with Enter. Microsoft's page can redraw a
+// field right after showing it (seen live: the email was typed, then an
+// empty field was submitted), so check the value held before pressing Enter.
+// fill() doesn't always trigger the validation JS that enables the Next
+// button; Enter submits regardless.
+async function enterValue(page, field, value) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await field.fill(value);
+    await page.waitForTimeout(700);
+    if ((await field.inputValue().catch(() => '')) === value) {
+      await field.press('Enter');
+      return;
+    }
+  }
+  throw new MoodleBrowserError("Microsoft's sign-in page didn't keep the typed value", 'LOGIN_FAILED');
+}
+
 async function login(page, { username, password, totpSecret }) {
   await page.goto(`${MOODLE_URL}/login/index.php`, { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
   const nameRx = new RegExp(username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
 
   // Microsoft's screens come in varying order (it remembers this profile's
@@ -170,20 +188,20 @@ async function login(page, { username, password, totpSecret }) {
     const visible = (name) => screens[name].isVisible().catch(() => false);
 
     if (await visible('error')) {
-      throw new MoodleBrowserError(`Login rejected: ${(await screens.error.textContent()).trim()}`, 'LOGIN_FAILED');
+      const text = (await screens.error.textContent().catch(() => '') || '').trim();
+      // "Enter a valid email" after our first try: the field was likely
+      // redrawn; enter it once more (below). Anything else is a rejection.
+      const retryEmail = emailsEntered === 1 && /valid email/i.test(text) && await visible('email');
+      if (!retryEmail) throw new MoodleBrowserError(`Login rejected: ${text}`, 'LOGIN_FAILED');
     }
-    // fill() doesn't always trigger the validation JS that enables the Next
-    // button, so submit with Enter instead of clicking it.
     if (await visible('password')) {
       if (passwordsEntered++) throw new MoodleBrowserError('Microsoft asked for the password again', 'LOGIN_FAILED');
-      await screens.password.fill(password);
-      await screens.password.press('Enter');
+      await enterValue(page, screens.password, password);
       continue;
     }
     if (await visible('email')) {
-      if (emailsEntered++) throw new MoodleBrowserError('Microsoft asked for the email again', 'LOGIN_FAILED');
-      await screens.email.fill(username);
-      await screens.email.press('Enter');
+      if (emailsEntered++ === 2) throw new MoodleBrowserError('Microsoft asked for the email again', 'LOGIN_FAILED');
+      await enterValue(page, screens.email, username);
       continue;
     }
     if (await visible('usePassword')) { await screens.usePassword.click(); continue; }
@@ -274,8 +292,16 @@ async function sessionWorks() {
   }
 }
 
+// Whether Microsoft's "Stay signed in" cookie is in the profile and not
+// expired: without it, opening the LMS can't sign in (and is skipped).
+function microsoftRemembers() {
+  if (!fs.existsSync(PROFILE_DIR)) return false;
+  return readBrowserCookies('login.microsoftonline.com')
+    .some((c) => c.name === 'ESTSAUTHPERSISTENT' && (c.expires === -1 || c.expires * 1000 > Date.now()));
+}
+
 async function signIn() {
-  if (fs.existsSync(PROFILE_DIR)) {
+  if (microsoftRemembers()) {
     await browserVisit(`${MOODLE_URL}/my/`);
     saveSession(readBrowserCookies(new URL(MOODLE_URL).hostname));
     if (await sessionWorks()) return 'Signed in to Moodle (the browser was still signed in to Microsoft)';
