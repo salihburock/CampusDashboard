@@ -170,17 +170,24 @@ async function login(page, { username, password, totpSecret }) {
   // Microsoft's screens come in varying order (it remembers this profile's
   // account, may skip the password or ask for the second factor in different
   // ways), so act on whichever is showing until back on Moodle.
+  // Fields the user can see. The email screen also holds an off-screen
+  // decoy #i0118 (class moveOffScreen, for the browser's password autofill)
+  // that counts as "visible"; taking it for the password screen typed the
+  // password into it and submitted an empty email (seen live).
+  const field = (sel) => page.locator(sel.split(',').map((s) => `${s.trim()}:not(.moveOffScreen):not([aria-hidden="true"])`).join(', ')).first();
   let lastStep = -1, codesEntered = 0, emailsEntered = 0, passwordsEntered = 0;
   for (let i = 0; i < 15 && !onMoodle(page.url()); i++) {
     const screens = {
       error: page.locator('#usernameError, #passwordError').first(),
-      password: page.locator('#i0118'),
-      email: page.locator('#i0116'),
-      usePassword: page.locator('text=Use my password').first(),
-      codeInput: page.locator('input[name="otc"], #idTxtBx_SAOTCC_OTC').first(),
+      password: field('#i0118'),
+      email: field('#i0116'),
+      // "Use my password" (method list) or "Use your password instead" (the
+      // passwordless "Approve sign in" screen Microsoft may go to first).
+      usePassword: page.locator('#idA_PWD_SwitchToPassword').or(page.getByText(/^\s*Use (my|your) password/i)).first(),
+      codeInput: field('input[name="otc"], #idTxtBx_SAOTCC_OTC'),
       codeChoice: page.locator('text=/Use a verification code/i').first(),
       pushWait: page.locator('text=/Approve sign.?in/i').first(),
-      otherWay: page.locator('#signInAnotherWay').or(page.getByText(/can.t use my Microsoft Authenticator app/i)).first(),
+      otherWay: page.locator('#signInAnotherWay').or(page.getByText(/can.t use my Microsoft Authenticator app|other ways to sign in/i)).first(),
       staySignedIn: page.locator('text=Stay signed in').first(),
       account: page.locator(`[data-test-id="${username}"]`).or(page.getByRole('button', { name: nameRx })).first(),
     };
@@ -250,6 +257,9 @@ async function scriptedSignIn(creds) {
   const context = await chromium.launchPersistentContext(PROFILE_DIR, {
     executablePath: CHROME_PATH,
     headless: !process.env.MOODLE_LOGIN_DISPLAY,
+    // Playwright turns Chrome's sandbox off by default (--no-sandbox, with a
+    // warning bar); keep it on like a normal Chrome.
+    chromiumSandbox: true,
     // A normal-looking Chrome: no "controlled by automated software" flag.
     ignoreDefaultArgs: ['--enable-automation'],
     args: ['--disable-blink-features=AutomationControlled'],
