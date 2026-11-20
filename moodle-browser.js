@@ -58,6 +58,8 @@ class MoodleBrowserError extends Error {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// ms give or take 35%, so waits don't repeat to the millisecond.
+const jitter = (ms) => ms * (0.65 + Math.random() * 0.7);
 const onMoodle = (url) => url.startsWith(MOODLE_URL) && !url.includes('login.microsoftonline');
 
 function chromeEnv() {
@@ -117,7 +119,7 @@ async function browserVisit(url, profileDir = PROFILE_DIR, waitMs = 20000) {
   if (!process.env.MOODLE_LOGIN_DISPLAY) args.push('--headless=new');
   const chrome = spawn(CHROME_PATH, [...args, url], { env: chromeEnv(), stdio: 'ignore' });
   const exited = new Promise((resolve) => chrome.on('exit', resolve));
-  await Promise.race([sleep(waitMs), exited]);
+  await Promise.race([sleep(jitter(waitMs)), exited]);
   chrome.kill('SIGTERM');
   if (!(await Promise.race([exited.then(() => true), sleep(15000).then(() => false)]))) chrome.kill('SIGKILL');
 }
@@ -149,11 +151,12 @@ async function typeAndSubmit(page, field, value) {
     await page.keyboard.press('Backspace');
     for (const ch of value) {
       const slow = ch === '.' || ch === '@';
-      if (slow) await sleep(250 + Math.random() * 250);
+      if (slow) await sleep(jitter(375));
       await page.keyboard.type(ch);
-      await sleep(slow ? 250 + Math.random() * 250 : 80 + Math.random() * 80);
+      // Now and then a longer hesitation, as when typing by hand.
+      await sleep(jitter(slow ? 375 : 120) + (Math.random() < 0.06 ? jitter(500) : 0));
     }
-    await sleep(400 + Math.random() * 400);
+    await sleep(jitter(600));
     if ((await field.inputValue().catch(() => '')) === value) {
       await page.keyboard.press('Enter');
       return;
@@ -197,7 +200,7 @@ async function login(page, { username, password, totpSecret }) {
       page.waitForURL((u) => onMoodle(u.toString()), { timeout: 15000 }).catch(() => {}),
     ]);
     // Screens animate in; "visible" passes mid-animation, before they take input.
-    await page.waitForTimeout(1500);
+    await sleep(jitter(1600));
     if (onMoodle(page.url())) break;
     const visible = (name) => screens[name].isVisible().catch(() => false);
     // After acting on a screen, wait for it to leave: screens slide out
@@ -229,7 +232,7 @@ async function login(page, { username, password, totpSecret }) {
       let step = Math.floor(Date.now() / 30000);
       // Typing takes a second or two: don't start a code about to expire.
       if (step === lastStep || 30000 - (Date.now() % 30000) < 4000) {
-        await sleep(30000 - (Date.now() % 30000) + 500);
+        await sleep(30000 - (Date.now() % 30000) + jitter(1200));
         if (!(await visible('codeInput'))) continue;
         step = Math.floor(Date.now() / 30000);
       }
