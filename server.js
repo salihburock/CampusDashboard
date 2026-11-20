@@ -1181,9 +1181,9 @@ function mergeBrowserCourse(data, { moodleId, code, name, catalog }, { syllabus,
   return created;
 }
 
-// The session comes from a login with MOODLE_USERNAME/PASSWORD, or without
-// them from the owner's own browser (campdash copies the cookie); either way
-// it is in userdata/.moodle-browser-session.json.
+// The session comes from a sign-in through Chrome (moodle-browser.js, with the
+// details in MOODLE_LOGIN_FILE), or from the owner's own browser (campdash
+// copies the cookie); either way it is in userdata/.moodle-browser-session.json.
 const BROWSER_SYNC_OWNER = process.env.MOODLE_SYNC_OWNER || '';
 // What the editor polls while a run is going (one run at a time).
 const browserSync = { running: false, step: '', startedAt: null, finishedAt: null, lastResult: null };

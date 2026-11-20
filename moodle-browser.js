@@ -1,94 +1,105 @@
-// ── Moodle login via headless browser ───────────────────────────
+// ── Moodle sign-in through a real browser ───────────────────────
 // The webservice REST API (moodle.js) is blocked for servers by the
 // university (403 on webservice/rest/server.php), while ordinary site
 // browsing with a logged-in session is not. This signs in like a person
-// would and saves the session cookies; everything else (course zips,
-// grades) is fetched with them over plain HTTP (moodle-http.js,
-// moodle-zip.js).
+// would (Microsoft Entra ID SSO, then an authenticator code) and saves the
+// Moodle session cookie; everything else (course zips, grades) is fetched
+// with it over plain HTTP (moodle-http.js, moodle-zip.js).
 //
-// Drives the system's installed Chrome (not Playwright's bundled browser —
-// avoids needing `playwright install` / sudo on a box where apt access is
-// unavailable) with a real login (Microsoft Entra ID SSO), and persists the
-// session (cookies) across runs so most syncs don't need to log in again.
+// The sign-in runs in its own process (`node moodle-browser.js login`), so
+// the password and TOTP key are read only there, never by the web server.
+// They come from MOODLE_LOGIN_FILE (default ~/.config/campdash/moodle-login,
+// KEY=VALUE lines, readable only by you), or else from the environment:
+//   MOODLE_USERNAME, MOODLE_PASSWORD, MOODLE_TOTP_SECRET
+// MOODLE_TOTP_SECRET is the key of an "other authenticator app" sign-in
+// method on the account; its 6-digit code is entered at the MFA step.
 //
-// Credentials: MOODLE_USERNAME / MOODLE_PASSWORD in .env. Only used to log
-// in when the saved session has expired. MFA is not expected on every
-// login (per account settings); if it is hit, the run aborts rather than
-// hanging or retrying blindly.
+// The browser is the system's Chrome (no `playwright install` needed) with a
+// fresh profile each time: a normal window without automation flags on
+// MOODLE_LOGIN_DISPLAY (e.g. ":0"), or headless when that is empty. Only the
+// Moodle cookies are kept.
 //
-// Without credentials nothing here signs in: the session file is then
-// supplied from outside (e.g. `campdash` copying the LMS cookie from the
-// owner's own browser), and an expired session is reported, not renewed.
+// The server signs in by itself when the session has expired. After a failed
+// attempt it stops (no retry loop that could lock the account) until a manual
+// `node moodle-browser.js login` (`campdash login`) succeeds. Without sign-in
+// details nothing signs in; the session file can then come from elsewhere
+// (campdash copies the LMS cookie from Chrome on your laptop).
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
-const { chromium } = require('playwright-core');
+const crypto = require('crypto');
+const { spawn } = require('child_process');
+
+// Run directly (not required by server.js): settings come from .env.
+if (require.main === module) {
+  try { process.loadEnvFile(path.join(__dirname, '.env')); } catch {}
+}
 
 const MOODLE_URL = (process.env.MOODLE_URL || '').trim().replace(/\/+$/, '');
 const CHROME_PATH = process.env.CHROME_PATH || '/usr/bin/google-chrome';
-const SESSION_STATE_PATH = path.join(__dirname, 'userdata', '.moodle-browser-session.json');
-const MFA_RELAY_URL = (process.env.MFA_RELAY_URL || '').trim().replace(/\/+$/, '');
-const MFA_RELAY_TOKEN = process.env.MFA_RELAY_TOKEN || '';
+const USERDATA = path.join(__dirname, 'userdata');
+const SESSION_STATE_PATH = path.join(USERDATA, '.moodle-browser-session.json');
+const FAILED_PATH = path.join(USERDATA, '.moodle-login-failed.json');
+const FAILED_SHOT_PATH = path.join(USERDATA, '.moodle-login-failed.png');
 
 class MoodleBrowserError extends Error {
   constructor(message, code) { super(message); this.code = code; }
 }
 
-// Approves a Microsoft Authenticator number-match prompt via the mfa-relay
-// service (self-hosted, ADB-taps a registered Android device/emulator —
-// see ~/gits/mfa-relay on ns). Not a bypass: it's the account's own second
-// factor, automated by the account owner. Returns true once the relay
-// reports the tap went through; the caller still waits for Moodle itself to
-// confirm the login succeeded.
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const onMoodle = (url) => url.startsWith(MOODLE_URL) && !url.includes('login.microsoftonline');
 
-// The relay's background poller needs a moment to pick up the push
-// notification after it lands on the device, so the first /approve call
-// often finds "no active prompt" yet — retry like the user's own `2fa`
-// shell helper does (up to 5 tries, 1.5s apart).
-async function approveViaRelay(number) {
-  if (!MFA_RELAY_URL || !MFA_RELAY_TOKEN) return false;
-  for (let attempt = 1; attempt <= 5; attempt++) {
-    try {
-      const res = await fetch(`${MFA_RELAY_URL}/approve`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-MFA-Token': MFA_RELAY_TOKEN },
-        body: JSON.stringify({ number }),
-        signal: AbortSignal.timeout(15000),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.approved === true) {
-        console.log(`[moodle-browser] mfa-relay approved on attempt ${attempt}/5`);
-        return true;
-      }
-      console.warn(`[moodle-browser] mfa-relay attempt ${attempt}/5: ${JSON.stringify(data)}`);
-    } catch (e) {
-      console.warn(`[moodle-browser] mfa-relay attempt ${attempt}/5 failed:`, e.message);
+function loginFilePath() {
+  const file = process.env.MOODLE_LOGIN_FILE || '~/.config/campdash/moodle-login';
+  return file.replace(/^~(?=\/|$)/, os.homedir());
+}
+
+function readCredentials() {
+  const file = loginFilePath();
+  const values = {};
+  if (fs.existsSync(file)) {
+    if (fs.statSync(file).mode & 0o077) {
+      throw new MoodleBrowserError(`${file} can be read by other users; run chmod 600 on it`, 'NO_CREDENTIALS');
     }
-    if (attempt < 5) await sleep(1500);
+    for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+      const m = line.match(/^\s*([A-Z_]+)\s*=\s*(.*?)\s*$/);
+      if (m) values[m[1]] = m[2].replace(/^(['"])(.*)\1$/, '$2');
+    }
   }
-  return false;
+  const get = (key) => values[key] || process.env[key] || '';
+  return {
+    file,
+    username: get('MOODLE_USERNAME'),
+    password: get('MOODLE_PASSWORD'),
+    totpSecret: get('MOODLE_TOTP_SECRET').replace(/[\s=]/g, '').toUpperCase(),
+  };
 }
 
-function debugShot(page, name) {
-  try {
-    const dir = path.join(__dirname, 'userdata', '.moodle-browser-debug');
-    fs.mkdirSync(dir, { recursive: true });
-    return page.screenshot({ path: path.join(dir, `${name}-${Date.now()}.png`) }).catch(() => {});
-  } catch { return Promise.resolve(); }
+// RFC 6238 code (SHA-1, 6 digits, 30 s steps: what Microsoft's "other
+// authenticator app" method uses) for the given 30-second step.
+function totp(secret, step) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let bits = '';
+  for (const ch of secret) {
+    const v = alphabet.indexOf(ch);
+    if (v < 0) throw new MoodleBrowserError('MOODLE_TOTP_SECRET is not a base32 key', 'NO_CREDENTIALS');
+    bits += v.toString(2).padStart(5, '0');
+  }
+  const key = Buffer.from(bits.match(/.{8}/g).map((b) => parseInt(b, 2)));
+  const msg = Buffer.alloc(8);
+  msg.writeBigUInt64BE(BigInt(step));
+  const h = crypto.createHmac('sha1', key).update(msg).digest();
+  const o = h[h.length - 1] & 15;
+  return String((h.readUInt32BE(o) & 0x7fffffff) % 1e6).padStart(6, '0');
 }
 
-async function login(page) {
-  const username = process.env.MOODLE_USERNAME;
-  const password = process.env.MOODLE_PASSWORD;
-  if (!username || !password) throw new MoodleBrowserError('MOODLE_USERNAME/MOODLE_PASSWORD not set', 'NO_CREDENTIALS');
-
+async function login(page, { username, password, totpSecret }) {
   await page.goto(`${MOODLE_URL}/login/index.php`, { waitUntil: 'domcontentloaded' });
 
-  // Microsoft Entra ID: email step. fill() doesn't always trigger the
-  // input-validation JS that enables the Next button, so submit with
-  // Enter instead of clicking it.
-  await page.waitForSelector('#i0116', { timeout: 20000 });
+  // Email step. fill() doesn't always trigger the input-validation JS that
+  // enables the Next button, so submit with Enter instead of clicking it.
+  await page.waitForSelector('#i0116', { timeout: 30000 });
   await page.fill('#i0116', username);
   await page.press('#i0116', 'Enter');
 
@@ -105,146 +116,170 @@ async function login(page) {
   // "visible" check passes mid-animation, before the element is really
   // interactable. Give the transition time to finish.
   await page.waitForTimeout(1500);
-  await debugShot(page, 'step1-chooser');
   if (await useMyPassword.isVisible().catch(() => false)) {
     await useMyPassword.click();
     await page.waitForTimeout(1500);
-    await debugShot(page, 'step1b-after-click');
   }
   await page.waitForSelector('#i0118', { state: 'visible', timeout: 30000 });
   await page.waitForTimeout(1500);
-  await debugShot(page, 'step2-password-field');
   await page.fill('#i0118', password);
   await page.press('#i0118', 'Enter');
   await page.waitForTimeout(1500);
-  await debugShot(page, 'step3-after-submit');
 
-  // From here: straight back to Moodle, a "Stay signed in?" interstitial
-  // (click Yes for a longer-lived session cookie), or an Authenticator
-  // approval prompt — not on every login per account policy, so wait it
-  // out (ticking "Don't ask again for 30 days") rather than failing
-  // instantly; a human may be able to approve it, especially on a
-  // manually-triggered run.
-  await page.waitForLoadState('domcontentloaded').catch(() => {});
-  for (let i = 0; i < 8; i++) {
-    const onMoodle = page.url().startsWith(MOODLE_URL) && !page.url().includes('login.microsoftonline');
-    if (onMoodle) break;
-
-    // The post-password screen is client-rendered (SPA), so an instant
-    // isVisible() check races the render; actively wait for one of the
-    // outcomes instead of snapshotting the DOM immediately.
-    const staySignedInLoc = page.locator('text=Stay signed in').first();
-    const approvingLoc = page.locator('text=/Approve sign.?in/i').first();
-    const chooserLoc = page.locator('text=Approve a request on my Microsoft Authenticator app').first();
-    const errorLoc = page.locator('#usernameError, #passwordError, .alert-error').first();
+  // Then: the second factor, "Stay signed in?", or straight back to Moodle.
+  let lastStep = -1, codesEntered = 0;
+  for (let i = 0; i < 10 && !onMoodle(page.url()); i++) {
+    const screens = {
+      codeInput: page.locator('input[name="otc"], #idTxtBx_SAOTCC_OTC').first(),
+      codeChoice: page.locator('text=/Use a verification code/i').first(),
+      pushWait: page.locator('text=/Approve sign.?in/i').first(),
+      otherWay: page.locator('#signInAnotherWay').or(page.getByText(/can.t use my Microsoft Authenticator app/i)).first(),
+      staySignedIn: page.locator('text=Stay signed in').first(),
+      error: page.locator('#usernameError, #passwordError').first(),
+    };
     await Promise.race([
-      staySignedInLoc.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {}),
-      approvingLoc.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {}),
-      chooserLoc.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {}),
-      errorLoc.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {}),
-      page.waitForURL((url) => url.toString().startsWith(MOODLE_URL) && !url.toString().includes('login.microsoftonline'), { timeout: 10000 }).catch(() => {}),
+      ...Object.values(screens).map((l) => l.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {})),
+      page.waitForURL((u) => onMoodle(u.toString()), { timeout: 15000 }).catch(() => {}),
     ]);
     await page.waitForTimeout(1500);
-    await debugShot(page, `loop${i}-settled`);
+    if (onMoodle(page.url())) break;
+    const visible = (name) => screens[name].isVisible().catch(() => false);
 
-    if (page.url().startsWith(MOODLE_URL) && !page.url().includes('login.microsoftonline')) break;
-
-    // This is the mandatory second-factor chooser (Authenticator is the
-    // only option besides it); click through to the real approve screen.
-    if (await chooserLoc.isVisible().catch(() => false)) {
-      await chooserLoc.click();
-      await page.waitForTimeout(1500);
-      continue;
+    if (await visible('error')) {
+      throw new MoodleBrowserError(`Login rejected: ${(await screens.error.textContent()).trim()}`, 'LOGIN_FAILED');
     }
-
-    const staySignedIn = await staySignedInLoc.isVisible().catch(() => false);
-    if (staySignedIn) {
-      await page.click('#idSIButton9');
-      await page.waitForLoadState('domcontentloaded').catch(() => {});
-      continue;
-    }
-
-    const approving = await approvingLoc.isVisible().catch(() => false);
-    if (approving) {
-      let code = await page.locator('#idRichContext_DisplaySign, [data-testid="displaySign"]').first().textContent({ timeout: 2000 }).catch(() => null);
-      if (!code) {
-        const bodyText = await page.locator('body').textContent().catch(() => '');
-        const m = bodyText.match(/Enter the number if prompted\.?\s*(\d{2})/) || bodyText.match(/\b(\d{2})\b\s*\n?\s*Didn/);
-        code = m ? m[1] : null;
-      } else {
-        code = code.trim();
+    if (await visible('codeInput')) {
+      if (!totpSecret) throw new MoodleBrowserError('Microsoft asks for an authenticator code and MOODLE_TOTP_SECRET is not set', 'LOGIN_FAILED');
+      // A rejected code gets one more try with the next code, then stop:
+      // repeated wrong codes can lock the account. A code is never reused.
+      if (codesEntered === 2) throw new MoodleBrowserError('Microsoft rejected the authenticator code twice; check MOODLE_TOTP_SECRET', 'LOGIN_FAILED');
+      let step = Math.floor(Date.now() / 30000);
+      if (step === lastStep) {
+        await sleep(30000 - (Date.now() % 30000) + 500);
+        if (!(await visible('codeInput'))) continue;
+        step = Math.floor(Date.now() / 30000);
       }
-      console.log(`[moodle-browser] Authenticator approval needed${code ? ` — code ${code}` : ' (no code found)'}`);
-
-      const dontAskAgain = page.locator('text=/Don.t ask again for \\d+ days/i').first();
-      if (await dontAskAgain.isVisible().catch(() => false)) await dontAskAgain.click().catch(() => {});
-
-      let relayApproved = false;
-      if (code && /^\d{1,3}$/.test(code)) relayApproved = await approveViaRelay(Number(code));
-      await debugShot(page, 'mfa-pending');
-      // Don't wait for the final Moodle URL in isolation here — approval
-      // can land on an intermediate screen first (e.g. "Stay signed in?",
-      // still on login.microsoftonline.com), which the top of this loop
-      // already knows how to handle. Let it, instead of timing out while
-      // sitting on a screen that isn't actually stuck.
-      if (!relayApproved && i === 4) {
-        await debugShot(page, 'mfa-approved-but-stuck');
-        throw new MoodleBrowserError('Authenticator approval was not confirmed by the relay', 'MFA_REQUIRED');
-      }
+      lastStep = step;
+      codesEntered++;
+      await screens.codeInput.fill(totp(totpSecret, step));
+      await screens.codeInput.press('Enter');
       continue;
     }
-
-    const errorText = await errorLoc.textContent({ timeout: 1000 }).catch(() => null);
-    if (errorText) throw new MoodleBrowserError(`Login rejected: ${errorText.trim()}`, 'LOGIN_FAILED');
-
-    // Anything else at this point ("pick an account", unexpected screen)
-    // we can't drive headlessly.
-    await debugShot(page, 'mfa-or-unexpected');
-    throw new MoodleBrowserError('Hit an MFA or unrecognized screen during login', 'MFA_REQUIRED');
+    if (await visible('codeChoice')) { await screens.codeChoice.click(); continue; }
+    // The Authenticator push (the account's default method): switch to the code.
+    if (await visible('pushWait') && await visible('otherWay')) { await screens.otherWay.click(); continue; }
+    if (await visible('staySignedIn')) { await page.click('#idSIButton9'); continue; }
+    throw new MoodleBrowserError('Unexpected screen during the Microsoft sign-in', 'LOGIN_FAILED');
   }
-
-  if (!page.url().startsWith(MOODLE_URL)) {
-    await debugShot(page, 'login-stuck');
-    throw new MoodleBrowserError('Did not land back on Moodle after login', 'LOGIN_FAILED');
-  }
+  if (!onMoodle(page.url())) throw new MoodleBrowserError('Did not get back to Moodle after signing in', 'LOGIN_FAILED');
 }
 
-async function ensureSession(context, page) {
-  await page.goto(`${MOODLE_URL}/my/`, { waitUntil: 'domcontentloaded' });
-  const loggedIn = page.url().startsWith(MOODLE_URL) && !page.url().includes('/login/');
-  if (loggedIn) return;
-  // Microsoft's login SPA is occasionally just slow to render a step (seen
-  // live, not an MFA/credentials issue) — one retry absorbs that instead of
-  // failing the whole sync over a transient page load.
-  try {
-    await login(page);
-  } catch (e) {
-    if (e instanceof MoodleBrowserError && (e.code === 'MFA_REQUIRED' || e.code === 'LOGIN_FAILED' || e.code === 'NO_CREDENTIALS')) throw e;
-    console.warn('[moodle-browser] login attempt 1 failed, retrying once:', e.message);
-    await login(page);
+async function signIn() {
+  const creds = readCredentials();
+  if (!creds.username || !creds.password) {
+    throw new MoodleBrowserError(`No Moodle sign-in details (MOODLE_USERNAME/MOODLE_PASSWORD in ${creds.file})`, 'NO_CREDENTIALS');
   }
-  await context.storageState({ path: SESSION_STATE_PATH });
-}
-
-// Signs in again (only if the saved session has expired) so plain HTTP
-// requests (moodle-http.js, moodle-zip.js) have a fresh session cookie. The
-// browser is open only for the login, then closed: short-lived on a
-// RAM-constrained box, not a persistent process.
-async function refreshSession() {
-  if (!process.env.MOODLE_USERNAME || !process.env.MOODLE_PASSWORD) {
-    throw new MoodleBrowserError('Moodle session expired: open the LMS in Chrome on your laptop, then run any campdash command', 'SESSION_EXPIRED');
-  }
-  const browser = await chromium.launch({ executablePath: CHROME_PATH, headless: true });
+  const { chromium } = require('playwright-core');
+  const display = process.env.MOODLE_LOGIN_DISPLAY || '';
+  const browser = await chromium.launch({
+    executablePath: CHROME_PATH,
+    headless: !display,
+    // A normal-looking Chrome: no "controlled by automated software" flag.
+    ignoreDefaultArgs: ['--enable-automation'],
+    args: ['--disable-blink-features=AutomationControlled'],
+    env: display
+      ? { ...process.env, DISPLAY: display, XAUTHORITY: process.env.XAUTHORITY || path.join(os.homedir(), '.Xauthority') }
+      : process.env,
+  });
   try {
-    const contextOptions = {};
-    if (fs.existsSync(SESSION_STATE_PATH)) contextOptions.storageState = SESSION_STATE_PATH;
-    const context = await browser.newContext(contextOptions);
+    const context = await browser.newContext();
     const page = await context.newPage();
-    await ensureSession(context, page);
-    await context.storageState({ path: SESSION_STATE_PATH }).catch(() => {});
+    try {
+      try {
+        await login(page, creds);
+      } catch (e) {
+        // Microsoft's sign-in pages are sometimes just slow to show a step;
+        // one retry absorbs that. Rejections are not retried.
+        if (e instanceof MoodleBrowserError) throw e;
+        console.warn(`[moodle-login] retrying once after: ${e.message}`);
+        await login(page, creds);
+      }
+    } catch (e) {
+      await page.screenshot({ path: FAILED_SHOT_PATH }).catch(() => {});
+      throw e;
+    }
+    // Keep only Moodle's cookies; Microsoft's could sign in elsewhere.
+    const host = new URL(MOODLE_URL).hostname;
+    const cookies = (await context.cookies()).filter((c) => {
+      const d = c.domain.replace(/^\./, '');
+      return host === d || host.endsWith('.' + d);
+    });
+    const tmp = SESSION_STATE_PATH + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify({ cookies, origins: [] }, null, 2), { mode: 0o600 });
+    fs.renameSync(tmp, SESSION_STATE_PATH);
   } finally {
     await browser.close();
   }
+}
+
+// `login`: signs in unless the saved session still works (--force: always).
+// `login --auto` (the server, after the session expired): signs in, unless an
+// earlier automatic attempt failed and no manual one has succeeded since.
+async function cli(args) {
+  const auto = args.includes('--auto');
+  if (auto && fs.existsSync(FAILED_PATH)) {
+    const failed = JSON.parse(fs.readFileSync(FAILED_PATH, 'utf8'));
+    throw new MoodleBrowserError(`automatic sign-in is paused since it failed on ${new Date(failed.at).toLocaleString('en-GB')} (${failed.message}); run campdash login`, 'LOGIN_PAUSED');
+  }
+  if (!auto && !args.includes('--force')) {
+    const moodleHttp = require('./moodle-http');
+    try {
+      await moodleHttp.getPage('/my/');
+      return 'Already signed in to Moodle (--force signs in again)';
+    } catch (e) {
+      if (!(e instanceof moodleHttp.SessionExpiredError)) throw e;
+    }
+  }
+  try {
+    await signIn();
+  } catch (e) {
+    if (e.code !== 'NO_CREDENTIALS') fs.writeFileSync(FAILED_PATH, JSON.stringify({ at: Date.now(), message: e.message }));
+    throw e;
+  }
+  fs.rmSync(FAILED_PATH, { force: true });
+  fs.rmSync(FAILED_SHOT_PATH, { force: true });
+  return 'Signed in to Moodle';
+}
+
+// Called by the server when Moodle says the session expired: signs in again
+// in a child process. Concurrent callers share one attempt.
+let refreshing = null;
+function refreshSession() {
+  if (refreshing) return refreshing;
+  refreshing = new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [__filename, 'login', '--auto'], { cwd: __dirname, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { out += d; });
+    const timer = setTimeout(() => child.kill('SIGTERM'), 5 * 60000);
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      const last = out.trim().split('\n').pop() || `exit code ${code}`;
+      console.log(`[moodle-login] ${last}`);
+      if (code === 0) resolve();
+      else reject(new MoodleBrowserError(`Moodle session expired and signing in again failed: ${last}`, 'LOGIN_FAILED'));
+    });
+  }).finally(() => { refreshing = null; });
+  return refreshing;
+}
+
+if (require.main === module) {
+  const [cmd, ...args] = process.argv.slice(2);
+  if (cmd !== 'login') {
+    console.error('usage: node moodle-browser.js login [--force]');
+    process.exit(2);
+  }
+  cli(args).then((msg) => console.log(msg), (e) => { console.log(e.message); process.exitCode = 1; });
 }
 
 module.exports = { MoodleBrowserError, refreshSession };
